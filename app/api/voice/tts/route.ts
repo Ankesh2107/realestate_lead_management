@@ -5,6 +5,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 const SARVAM_TTS_URL = 'https://api.sarvam.ai/text-to-speech';
+const DEFAULT_SARVAM_KEY = 'sk_2j3c5xnd_JG3b9OwBoCvvlzR3a6319Paj';
 
 /** Clean & humanize text for natural conversational speech flow */
 function humanizeTextForSpeech(text: string): string {
@@ -43,10 +44,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'No text provided' }, { status: 400 });
     }
 
-    const apiKey = process.env.SARVAM_API_KEY;
-    if (!apiKey) {
-      return NextResponse.json({ error: 'SARVAM_API_KEY not configured' }, { status: 500 });
-    }
+    const apiKey = process.env.SARVAM_API_KEY || DEFAULT_SARVAM_KEY;
 
     const humanizedText = humanizeTextForSpeech(text).slice(0, 2500);
 
@@ -91,7 +89,7 @@ export async function POST(req: NextRequest) {
       const errorText = await response.text();
       console.error('[voice/tts] Sarvam TTS error:', response.status, errorText);
       return NextResponse.json(
-        { error: `Sarvam TTS failed: ${response.status}` },
+        { error: `Sarvam TTS failed: ${response.status}`, details: errorText },
         { status: response.status }
       );
     }
