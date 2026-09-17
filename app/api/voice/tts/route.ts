@@ -10,7 +10,7 @@ const SARVAM_TTS_URL = 'https://api.sarvam.ai/text-to-speech';
 function humanizeTextForSpeech(text: string): string {
   if (!text) return '';
   let clean = text
-    // Remove markdown formatting
+    // Remove markdown symbols and code blocks
     .replace(/\*\*(.*?)\*\*/g, '$1')
     .replace(/\*(.*?)\*/g, '$1')
     .replace(/`/g, '')
@@ -19,6 +19,15 @@ function humanizeTextForSpeech(text: string): string {
     // Replace multiple newlines with natural pauses
     .replace(/[\r\n]+/g, '. ')
     .trim();
+
+  // Expand real estate shorthand to natural spoken words
+  clean = clean
+    .replace(/\b(\d+)\s*BHK\b/gi, '$1 B H K')
+    .replace(/\b(\d+(?:\.\d+)?)\s*Cr\b/gi, '$1 Crore')
+    .replace(/\b(\d+(?:\.\d+)?)\s*L\b/gi, '$1 Lakh')
+    .replace(/\bsqft\b/gi, 'square feet')
+    .replace(/\bCRM\b/gi, 'C R M')
+    .replace(/\bAI\b/gi, 'A I');
 
   // Add micro-pause after conversational greetings if missing punctuation
   clean = clean.replace(/\b(Namaste|Hello|Haan|Ji|Bilkul|Sure|Dhanyawad)\b(?![,\.!?])/gi, '$1,');
@@ -71,8 +80,8 @@ export async function POST(req: NextRequest) {
         speaker: safeSpeaker,
         pace: typeof pace === 'number' ? Math.max(0.7, Math.min(1.3, pace)) : 1.0,
         pitch: 0,
-        loudness: 1.5,
-        speech_sample_rate: 22050,
+        loudness: 1.0,
+        speech_sample_rate: 24000,
         enable_preprocessing: true,
         model: 'bulbul:v3',
       }),

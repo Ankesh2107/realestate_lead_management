@@ -94,7 +94,7 @@ export default function Dashboard() {
   const [voiceInput, setVoiceInput] = useState<string>('');
   const [noticeMsg, setNoticeMsg] = useState<string>('');
 
-  // Voice refs
+  // Synchronous Voice Refs (prevents stale closure issues)
   const voiceSessionRef = useRef<string>('');
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -104,15 +104,19 @@ export default function Dashboard() {
   const callTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
   const voiceStatusRef = useRef<VoiceStatus>('idle');
+  const voiceSpeakerRef = useRef<string>('ritu');
+  const voiceLangRef = useRef<'hi-IN' | 'en-IN'>('hi-IN');
+  const voicePaceRef = useRef<number>(1.0);
   const transcriptBottomRef = useRef<HTMLDivElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const recognitionRef = useRef<any>(null);
   const isProcessingTurnRef = useRef<boolean>(false);
 
-  // Keep status ref in sync
-  useEffect(() => {
-    voiceStatusRef.current = voiceStatus;
-  }, [voiceStatus]);
+  // Synchronize state with refs
+  useEffect(() => { voiceStatusRef.current = voiceStatus; }, [voiceStatus]);
+  useEffect(() => { voiceSpeakerRef.current = voiceSpeaker; }, [voiceSpeaker]);
+  useEffect(() => { voiceLangRef.current = voiceLang; }, [voiceLang]);
+  useEffect(() => { voicePaceRef.current = voicePace; }, [voicePace]);
 
   useEffect(() => {
     transcriptBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -226,32 +230,36 @@ export default function Dashboard() {
     });
   }
 
-  /** Call Sarvam TTS via server proxy with fallback */
+  /** Call Sarvam TTS exclusively (retry up to 2x, NO robotic browser fallback) */
   async function speakWithSarvam(text: string): Promise<void> {
-    try {
-      const res = await fetch('/api/voice/tts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, speaker: voiceSpeaker, language_code: voiceLang, pace: voicePace }),
-      });
-      if (!res.ok) throw new Error(`TTS HTTP error: ${res.status}`);
-      const data = await res.json();
-      if (data.audio) {
-        await playAudioBase64(data.audio);
-        return;
+    const currentSpeaker = voiceSpeakerRef.current;
+    const currentLang = voiceLangRef.current;
+    const currentPace = voicePaceRef.current;
+
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const res = await fetch('/api/voice/tts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text,
+            speaker: currentSpeaker,
+            language_code: currentLang,
+            pace: currentPace,
+          }),
+        });
+        if (!res.ok) throw new Error(`TTS HTTP error: ${res.status}`);
+        const data = await res.json();
+        if (data.audio) {
+          await playAudioBase64(data.audio);
+          return;
+        }
+      } catch (err) {
+        console.warn(`[voice] Sarvam TTS attempt ${attempt} error:`, err);
+        if (attempt === 2) {
+          setNoticeMsg('Voice playback network delay. Speaking again...');
+        }
       }
-      throw new Error('No audio returned from Sarvam');
-    } catch (err) {
-      console.warn('[voice] Sarvam TTS fallback to browser TTS:', err);
-      await new Promise<void>((resolve) => {
-        if (typeof window === 'undefined' || !window.speechSynthesis) { resolve(); return; }
-        const utter = new SpeechSynthesisUtterance(text);
-        utter.lang = voiceLang;
-        utter.rate = voicePace;
-        utter.onend = () => resolve();
-        utter.onerror = () => resolve();
-        window.speechSynthesis.speak(utter);
-      });
     }
   }
 
@@ -261,7 +269,7 @@ export default function Dashboard() {
     try {
       const form = new FormData();
       form.append('audio', blob, 'audio.wav');
-      form.append('language_code', voiceLang);
+      form.append('language_code', voiceLangRef.current);
       const res = await fetch('/api/voice/stt', { method: 'POST', body: form });
       if (!res.ok) return '';
       const data = await res.json();
@@ -369,7 +377,7 @@ export default function Dashboard() {
     if (statusAfterTTS !== 'ended' && statusAfterTTS !== 'idle') {
       startListeningLoop();
     }
-  }, [voiceLang, voiceSpeaker, voicePace]);
+  }, []);
 
   /** Start listening loop with Browser Speech Recognition + MediaRecorder fallback */
   const startListeningLoop = useCallback(() => {
@@ -397,7 +405,7 @@ export default function Dashboard() {
         const rec = new SpeechRec();
         rec.continuous = false;
         rec.interimResults = true;
-        rec.lang = voiceLang;
+        rec.lang = voiceLangRef.current;
 
         rec.onresult = (e: any) => {
           let currentTranscript = '';
@@ -422,7 +430,7 @@ export default function Dashboard() {
         console.warn('[voice] Web Speech Rec start failed:', err);
       }
     }
-  }, [voiceLang, processTurn]);
+  }, [processTurn]);
 
   /** Start call flow */
   async function startCall() {
@@ -456,7 +464,7 @@ export default function Dashboard() {
     callTimerRef.current = setInterval(() => setCallDuration((d) => d + 1), 1000);
 
     const greeting =
-      voiceLang === 'hi-IN'
+      voiceLangRef.current === 'hi-IN'
         ? `Namaste! Main Realty AI hoon, Skyline Realty ki taraf se. Aap kaisi property dekh rahe hain?`
         : `Hello! I'm Realty AI from Skyline Realty. What kind of property are you looking for today?`;
 
@@ -472,8 +480,6 @@ export default function Dashboard() {
   /** End call flow */
   function endCall() {
     currentAudioRef.current?.pause();
-    if (typeof window !== 'undefined') window.speechSynthesis?.cancel();
-
     stopSpeechRecognition();
     stopMediaRecorder();
 
@@ -687,7 +693,10 @@ export default function Dashboard() {
                     {([['hi-IN', 'Hindi (हिन्दी) 🇮🇳'], ['en-IN', 'English (Indian) 🇮🇳']] as const).map(([code, label]) => (
                       <button key={code} onClick={() => {
                         setVoiceLang(code);
-                        setVoiceSpeaker(code === 'hi-IN' ? 'ritu' : 'rahul');
+                        voiceLangRef.current = code;
+                        const defaultSpk = code === 'hi-IN' ? 'ritu' : 'rahul';
+                        setVoiceSpeaker(defaultSpk);
+                        voiceSpeakerRef.current = defaultSpk;
                       }} style={{ flex: 1, padding: '8px 12px', borderRadius: '6px', border: `1px solid ${voiceLang === code ? '#3b82f6' : '#232f48'}`, background: voiceLang === code ? 'rgba(59,130,246,0.15)' : '#131b2e', color: voiceLang === code ? '#60a5fa' : '#9ca3af', fontSize: '12px', fontWeight: '600', cursor: 'pointer' }}>
                         {label}
                       </button>
@@ -711,7 +720,10 @@ export default function Dashboard() {
 
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', maxHeight: '200px', overflowY: 'auto', paddingRight: '4px' }}>
                     {filteredVoices.map((v) => (
-                      <button key={v.id} onClick={() => setVoiceSpeaker(v.id)} style={{ textAlign: 'left', padding: '8px 10px', borderRadius: '6px', border: `1px solid ${voiceSpeaker === v.id ? '#8b5cf6' : '#232f48'}`, background: voiceSpeaker === v.id ? 'rgba(139,92,246,0.15)' : '#131b2e', color: voiceSpeaker === v.id ? '#a78bfa' : '#d1d5db', cursor: 'pointer' }}>
+                      <button key={v.id} onClick={() => {
+                        setVoiceSpeaker(v.id);
+                        voiceSpeakerRef.current = v.id;
+                      }} style={{ textAlign: 'left', padding: '8px 10px', borderRadius: '6px', border: `1px solid ${voiceSpeaker === v.id ? '#8b5cf6' : '#232f48'}`, background: voiceSpeaker === v.id ? 'rgba(139,92,246,0.15)' : '#131b2e', color: voiceSpeaker === v.id ? '#a78bfa' : '#d1d5db', cursor: 'pointer' }}>
                         <div style={{ fontSize: '12px', fontWeight: '600' }}>{v.name}</div>
                         <div style={{ fontSize: '10px', color: '#9ca3af', marginTop: '2px' }}>{v.desc}</div>
                       </button>
@@ -733,7 +745,11 @@ export default function Dashboard() {
                     max="1.15"
                     step="0.05"
                     value={voicePace}
-                    onChange={(e) => setVoicePace(parseFloat(e.target.value))}
+                    onChange={(e) => {
+                      const val = parseFloat(e.target.value);
+                      setVoicePace(val);
+                      voicePaceRef.current = val;
+                    }}
                     style={{ width: '100%', accentColor: '#3b82f6', cursor: 'pointer' }}
                   />
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: '#6b7280', marginTop: '2px' }}>
