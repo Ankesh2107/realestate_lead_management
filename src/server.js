@@ -29,11 +29,15 @@ app.use('/api/test', testApiRoutes);
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
 
-app.listen(PORT, () => {
-  logger.info(`Realty AI server running on http://localhost:${PORT}`);
-  logger.info(`Test UI:              http://localhost:${PORT}`);
-  logger.info(`WhatsApp webhook:     http://localhost:${PORT}/webhooks/whatsapp`);
-  logger.info(`Facebook webhook:     http://localhost:${PORT}/webhooks/facebook`);
-  logger.info(`Instagram webhook:    http://localhost:${PORT}/webhooks/instagram`);
-  logger.info(`Voice incoming:       http://localhost:${PORT}/webhooks/voice/incoming`);
-});
+if (require.main === module) {
+  app.listen(PORT, () => {
+    logger.info(`Realty AI server running on http://localhost:${PORT}`);
+    logger.info(`Test UI:              http://localhost:${PORT}`);
+    logger.info(`WhatsApp webhook:     http://localhost:${PORT}/webhooks/whatsapp`);
+    logger.info(`Facebook webhook:     http://localhost:${PORT}/webhooks/facebook`);
+    logger.info(`Instagram webhook:    http://localhost:${PORT}/webhooks/instagram`);
+    logger.info(`Voice incoming:       http://localhost:${PORT}/webhooks/voice/incoming`);
+  });
+}
+
+module.exports = app;
