@@ -1,14 +1,34 @@
 // app/api/voice/tts/route.ts
 // Sarvam AI Bulbul v3 Text-to-Speech proxy
-// Returns base64-encoded WAV audio for browser playback
+// Transforms raw AI text into human-like conversational Indian speech
 
 import { NextRequest, NextResponse } from 'next/server';
 
 const SARVAM_TTS_URL = 'https://api.sarvam.ai/text-to-speech';
 
+/** Clean & humanize text for natural conversational speech flow */
+function humanizeTextForSpeech(text: string): string {
+  if (!text) return '';
+  let clean = text
+    // Remove markdown formatting
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/\*(.*?)\*/g, '$1')
+    .replace(/`/g, '')
+    .replace(/^#+\s+/gm, '')
+    .replace(/^[-*•]\s+/gm, '')
+    // Replace multiple newlines with natural pauses
+    .replace(/[\r\n]+/g, '. ')
+    .trim();
+
+  // Add micro-pause after conversational greetings if missing punctuation
+  clean = clean.replace(/\b(Namaste|Hello|Haan|Ji|Bilkul|Sure|Dhanyawad)\b(?![,\.!?])/gi, '$1,');
+
+  return clean;
+}
+
 export async function POST(req: NextRequest) {
   try {
-    const { text, speaker = 'meera', language_code = 'hi-IN', pace = 1.0 } = await req.json();
+    const { text, speaker = 'ritu', language_code = 'hi-IN', pace = 1.0 } = await req.json();
 
     if (!text || text.trim().length === 0) {
       return NextResponse.json({ error: 'No text provided' }, { status: 400 });
@@ -19,10 +39,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'SARVAM_API_KEY not configured' }, { status: 500 });
     }
 
-    // Truncate to 2500 chars (Sarvam REST API limit)
-    const truncatedText = text.slice(0, 2500);
+    const humanizedText = humanizeTextForSpeech(text).slice(0, 2500);
 
-    // Map legacy / invalid speaker names to valid Bulbul v3 speakers
+    // List of verified Bulbul v3 speakers
     const validBulbulV3Speakers = [
       'aditya', 'ritu', 'ashutosh', 'priya', 'neha', 'rahul', 'pooja', 'rohan',
       'simran', 'kavya', 'amit', 'dev', 'ishita', 'shreya', 'ratan', 'varun',
@@ -47,10 +66,10 @@ export async function POST(req: NextRequest) {
         'api-subscription-key': apiKey,
       },
       body: JSON.stringify({
-        inputs: [truncatedText],
+        inputs: [humanizedText],
         target_language_code: language_code,
         speaker: safeSpeaker,
-        pace,
+        pace: typeof pace === 'number' ? Math.max(0.7, Math.min(1.3, pace)) : 1.0,
         pitch: 0,
         loudness: 1.5,
         speech_sample_rate: 22050,
@@ -69,7 +88,6 @@ export async function POST(req: NextRequest) {
     }
 
     const data = await response.json();
-    // Sarvam returns { audios: [base64string] }
     const audioBase64 = data?.audios?.[0];
     if (!audioBase64) {
       return NextResponse.json({ error: 'No audio returned from Sarvam' }, { status: 500 });

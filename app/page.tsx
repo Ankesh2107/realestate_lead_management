@@ -22,6 +22,7 @@ import {
   Volume2,
   Loader2,
   Info,
+  Sliders,
 } from 'lucide-react';
 
 // ─── Voice state machine ───────────────────────────────────────────────────
@@ -32,6 +33,25 @@ type VoiceStatus =
   | 'processing'  // STT + AI reply + TTS in progress
   | 'speaking'    // playing AI audio
   | 'ended';      // call hung up
+
+const SARVAM_VOICE_LIBRARY = [
+  // Female Voices ♀
+  { id: 'ritu', name: 'Ritu ♀', gender: 'female', desc: 'Warm & Conversational' },
+  { id: 'simran', name: 'Simran ♀', gender: 'female', desc: 'Friendly & Expressive' },
+  { id: 'priya', name: 'Priya ♀', gender: 'female', desc: 'Soft Customer Service' },
+  { id: 'ishita', name: 'Ishita ♀', gender: 'female', desc: 'Energetic Sales Pitch' },
+  { id: 'pooja', name: 'Pooja ♀', gender: 'female', desc: 'Clear & Professional' },
+  { id: 'roopa', name: 'Roopa ♀', gender: 'female', desc: 'Calm & Trustworthy' },
+  { id: 'kavya', name: 'Kavya ♀', gender: 'female', desc: 'Modern Youth Accent' },
+  // Male Voices ♂
+  { id: 'aditya', name: 'Aditya ♂', gender: 'male', desc: 'Executive & Professional' },
+  { id: 'rahul', name: 'Rahul ♂', gender: 'male', desc: 'Friendly Sales Advisor' },
+  { id: 'shubh', name: 'Shubh ♂', gender: 'male', desc: 'Confident Specialist' },
+  { id: 'dev', name: 'Dev ♂', gender: 'male', desc: 'Warm & Approachable' },
+  { id: 'kabir', name: 'Kabir ♂', gender: 'male', desc: 'Deep Voice Executive' },
+  { id: 'varun', name: 'Varun ♂', gender: 'male', desc: 'Dynamic & Upbeat' },
+  { id: 'manan', name: 'Manan ♂', gender: 'male', desc: 'Relatable & Clear' },
+];
 
 export default function Dashboard() {
   const [activeTab, setActiveTab] = useState<'chat' | 'voice' | 'leads' | 'properties' | 'ops'>('chat');
@@ -62,7 +82,9 @@ export default function Dashboard() {
   // ── Voice state ──────────────────────────────────────────────────────────
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>('idle');
   const [voiceLang, setVoiceLang] = useState<'hi-IN' | 'en-IN'>('hi-IN');
-  const [voiceSpeaker, setVoiceSpeaker] = useState<string>('ritu'); // Valid Bulbul v3 speaker
+  const [voiceSpeaker, setVoiceSpeaker] = useState<string>('ritu');
+  const [voicePace, setVoicePace] = useState<number>(1.0);
+  const [voiceGenderFilter, setVoiceGenderFilter] = useState<'all' | 'female' | 'male'>('all');
   const [voiceTranscript, setVoiceTranscript] = useState<
     { speaker: 'You' | 'Realty AI'; text: string; time: string }[]
   >([]);
@@ -210,7 +232,7 @@ export default function Dashboard() {
       const res = await fetch('/api/voice/tts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, speaker: voiceSpeaker, language_code: voiceLang, pace: 1.05 }),
+        body: JSON.stringify({ text, speaker: voiceSpeaker, language_code: voiceLang, pace: voicePace }),
       });
       if (!res.ok) throw new Error(`TTS HTTP error: ${res.status}`);
       const data = await res.json();
@@ -221,12 +243,11 @@ export default function Dashboard() {
       throw new Error('No audio returned from Sarvam');
     } catch (err) {
       console.warn('[voice] Sarvam TTS fallback to browser TTS:', err);
-      // Fallback to browser speech synthesis
       await new Promise<void>((resolve) => {
         if (typeof window === 'undefined' || !window.speechSynthesis) { resolve(); return; }
         const utter = new SpeechSynthesisUtterance(text);
         utter.lang = voiceLang;
-        utter.rate = 1.0;
+        utter.rate = voicePace;
         utter.onend = () => resolve();
         utter.onerror = () => resolve();
         window.speechSynthesis.speak(utter);
@@ -306,7 +327,6 @@ export default function Dashboard() {
 
     let textToProcess = (spokenText || '').trim();
 
-    // If no text was provided directly (e.g. timed out), try STT on media recorder
     if (!textToProcess) {
       const blob = await stopMediaRecorder();
       textToProcess = await transcribeAudio(blob);
@@ -325,7 +345,6 @@ export default function Dashboard() {
 
     addTranscript('You', textToProcess);
 
-    // Fetch AI response from Gemini sales pipeline
     let aiReply = "Aapki inquiry update ho gayi hai. Main Skyline Realty CRM se details check kar rahi hoon.";
     try {
       const res = await fetch('/api/test/message', {
@@ -341,18 +360,16 @@ export default function Dashboard() {
 
     addTranscript('Realty AI', aiReply);
 
-    // Speak response via Sarvam TTS
     setVoiceStatus('speaking');
     await speakWithSarvam(aiReply);
 
     isProcessingTurnRef.current = false;
 
-    // Loop back to listening if call is still active
     const statusAfterTTS: string = voiceStatusRef.current;
     if (statusAfterTTS !== 'ended' && statusAfterTTS !== 'idle') {
       startListeningLoop();
     }
-  }, [voiceLang, voiceSpeaker]);
+  }, [voiceLang, voiceSpeaker, voicePace]);
 
   /** Start listening loop with Browser Speech Recognition + MediaRecorder fallback */
   const startListeningLoop = useCallback(() => {
@@ -362,7 +379,6 @@ export default function Dashboard() {
     startLevelMeter();
     setInterimText('');
 
-    // 1. Start MediaRecorder
     if (streamRef.current) {
       try {
         const mr = new MediaRecorder(streamRef.current, { mimeType: 'audio/webm' });
@@ -375,7 +391,6 @@ export default function Dashboard() {
       }
     }
 
-    // 2. Start Web Speech Recognition if supported
     const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (SpeechRec) {
       try {
@@ -391,7 +406,6 @@ export default function Dashboard() {
           }
           setInterimText(currentTranscript);
 
-          // If final result, process turn immediately!
           if (e.results[e.results.length - 1].isFinal) {
             rec.stop();
             processTurn(currentTranscript);
@@ -423,7 +437,6 @@ export default function Dashboard() {
       return;
     }
 
-    // Audio Context for mic meter
     try {
       const ctx = new AudioContext();
       const analyser = ctx.createAnalyser();
@@ -476,7 +489,6 @@ export default function Dashboard() {
     setInterimText('');
   }
 
-  /** Handle manual speech input send */
   function handleSendVoiceInput(textToSend?: string) {
     const text = (textToSend || voiceInput).trim();
     if (!text) return;
@@ -489,6 +501,10 @@ export default function Dashboard() {
     const sec = (s % 60).toString().padStart(2, '0');
     return `${m}:${sec}`;
   }
+
+  const filteredVoices = SARVAM_VOICE_LIBRARY.filter(
+    (v) => voiceGenderFilter === 'all' || v.gender === voiceGenderFilter
+  );
 
   return (
     <div style={{ padding: '24px', maxWidth: '1400px', margin: '0 auto' }}>
@@ -592,7 +608,7 @@ export default function Dashboard() {
 
       {/* ── Tab 2: Voice Call (Sarvam AI) ── */}
       {activeTab === 'voice' && (
-        <div style={{ display: 'grid', gridTemplateColumns: '400px 1fr', gap: '20px', alignItems: 'start' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '440px 1fr', gap: '20px', alignItems: 'start' }}>
           {/* Call Control Console */}
           <div style={{ ...panelStyle, textAlign: 'center', padding: '28px 24px' }}>
             {/* AI Avatar */}
@@ -662,15 +678,17 @@ export default function Dashboard() {
 
             {/* Language & Voice Selector */}
             {(voiceStatus === 'idle' || voiceStatus === 'ended') && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '24px', textAlign: 'left' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', marginBottom: '24px', textAlign: 'left', background: '#0b0f19', padding: '16px', borderRadius: '10px', border: '1px solid #1e293b' }}>
                 <div>
-                  <label style={{ fontSize: '12px', color: '#9ca3af', marginBottom: '6px', display: 'block' }}>Select Language</label>
+                  <label style={{ fontSize: '12px', color: '#9ca3af', marginBottom: '6px', display: 'block', fontWeight: '600' }}>
+                    🌐 Language Accent
+                  </label>
                   <div style={{ display: 'flex', gap: '8px' }}>
                     {([['hi-IN', 'Hindi (हिन्दी) 🇮🇳'], ['en-IN', 'English (Indian) 🇮🇳']] as const).map(([code, label]) => (
                       <button key={code} onClick={() => {
                         setVoiceLang(code);
                         setVoiceSpeaker(code === 'hi-IN' ? 'ritu' : 'rahul');
-                      }} style={{ flex: 1, padding: '10px', borderRadius: '6px', border: `1px solid ${voiceLang === code ? '#3b82f6' : '#232f48'}`, background: voiceLang === code ? 'rgba(59,130,246,0.15)' : '#0b0f19', color: voiceLang === code ? '#60a5fa' : '#9ca3af', fontSize: '12px', fontWeight: '600', cursor: 'pointer' }}>
+                      }} style={{ flex: 1, padding: '8px 12px', borderRadius: '6px', border: `1px solid ${voiceLang === code ? '#3b82f6' : '#232f48'}`, background: voiceLang === code ? 'rgba(59,130,246,0.15)' : '#131b2e', color: voiceLang === code ? '#60a5fa' : '#9ca3af', fontSize: '12px', fontWeight: '600', cursor: 'pointer' }}>
                         {label}
                       </button>
                     ))}
@@ -678,18 +696,50 @@ export default function Dashboard() {
                 </div>
 
                 <div>
-                  <label style={{ fontSize: '12px', color: '#9ca3af', marginBottom: '6px', display: 'block' }}>Select Voice (Sarvam Bulbul v3)</label>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                    {[
-                      ['ritu', 'Ritu (Female) ♀'],
-                      ['aditya', 'Aditya (Male) ♂'],
-                      ['simran', 'Simran (Female) ♀'],
-                      ['rahul', 'Rahul (Male) ♂'],
-                    ].map(([v, label]) => (
-                      <button key={v} onClick={() => setVoiceSpeaker(v)} style={{ padding: '8px', borderRadius: '6px', border: `1px solid ${voiceSpeaker === v ? '#8b5cf6' : '#232f48'}`, background: voiceSpeaker === v ? 'rgba(139,92,246,0.15)' : '#0b0f19', color: voiceSpeaker === v ? '#a78bfa' : '#9ca3af', fontSize: '12px', cursor: 'pointer' }}>
-                        {label}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                    <label style={{ fontSize: '12px', color: '#9ca3af', fontWeight: '600' }}>
+                      🎙️ Select AI Voice ({filteredVoices.length} options)
+                    </label>
+                    <div style={{ display: 'flex', gap: '4px' }}>
+                      {(['all', 'female', 'male'] as const).map((g) => (
+                        <button key={g} onClick={() => setVoiceGenderFilter(g)} style={{ padding: '2px 8px', borderRadius: '4px', border: 'none', background: voiceGenderFilter === g ? '#3b82f6' : '#1e293b', color: voiceGenderFilter === g ? '#fff' : '#9ca3af', fontSize: '10px', textTransform: 'capitalize', cursor: 'pointer' }}>
+                          {g}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', maxHeight: '200px', overflowY: 'auto', paddingRight: '4px' }}>
+                    {filteredVoices.map((v) => (
+                      <button key={v.id} onClick={() => setVoiceSpeaker(v.id)} style={{ textAlign: 'left', padding: '8px 10px', borderRadius: '6px', border: `1px solid ${voiceSpeaker === v.id ? '#8b5cf6' : '#232f48'}`, background: voiceSpeaker === v.id ? 'rgba(139,92,246,0.15)' : '#131b2e', color: voiceSpeaker === v.id ? '#a78bfa' : '#d1d5db', cursor: 'pointer' }}>
+                        <div style={{ fontSize: '12px', fontWeight: '600' }}>{v.name}</div>
+                        <div style={{ fontSize: '10px', color: '#9ca3af', marginTop: '2px' }}>{v.desc}</div>
                       </button>
                     ))}
+                  </div>
+                </div>
+
+                {/* Speech Pace Slider */}
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                    <label style={{ fontSize: '12px', color: '#9ca3af', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                      <Sliders size={12} /> Speech Cadence Speed
+                    </label>
+                    <span style={{ fontSize: '11px', color: '#60a5fa', fontWeight: '700' }}>{voicePace.toFixed(2)}x</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0.85"
+                    max="1.15"
+                    step="0.05"
+                    value={voicePace}
+                    onChange={(e) => setVoicePace(parseFloat(e.target.value))}
+                    style={{ width: '100%', accentColor: '#3b82f6', cursor: 'pointer' }}
+                  />
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: '#6b7280', marginTop: '2px' }}>
+                    <span>Relaxed (0.85x)</span>
+                    <span>Conversational (1.0x)</span>
+                    <span>Fast (1.15x)</span>
                   </div>
                 </div>
               </div>
@@ -768,7 +818,7 @@ export default function Dashboard() {
               )}
             </div>
 
-            <div style={{ height: '520px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '14px', paddingRight: '4px' }}>
+            <div style={{ height: '560px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '14px', paddingRight: '4px' }}>
               {voiceTranscript.length === 0 && !interimText && (
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '12px' }}>
                   <div style={{ width: '64px', height: '64px', borderRadius: '50%', background: 'rgba(139,92,246,0.1)', border: '1px solid rgba(139,92,246,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -776,7 +826,7 @@ export default function Dashboard() {
                   </div>
                   <p style={{ color: '#6b7280', fontSize: '14px', textAlign: 'center', lineHeight: '1.6' }}>
                     Click <strong>Start Voice Call</strong> to speak live with Realty AI.<br />
-                    Supports real-time Web Speech recognition + Sarvam AI Bulbul v3 TTS!
+                    Select from 14 distinct male/female Sarvam Bulbul v3 voices!
                   </p>
                 </div>
               )}
