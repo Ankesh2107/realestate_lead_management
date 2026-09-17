@@ -219,14 +219,47 @@ export default function Dashboard() {
     setVoiceTranscript((prev) => [...prev, { speaker, text, time: nowTime() }]);
   }
 
-  /** Play base64 WAV audio from Sarvam TTS */
+  /** Play base64 WAV audio from Sarvam TTS via Blob Object URL + AudioContext resume */
   async function playAudioBase64(base64: string): Promise<void> {
-    return new Promise((resolve) => {
-      const audio = new Audio(`data:audio/wav;base64,${base64}`);
-      currentAudioRef.current = audio;
-      audio.onended = () => resolve();
-      audio.onerror = () => resolve();
-      audio.play().catch(() => resolve());
+    return new Promise(async (resolve) => {
+      try {
+        // Ensure AudioContext is active
+        if (audioContextRef.current && audioContextRef.current.state === 'suspended') {
+          await audioContextRef.current.resume().catch(() => {});
+        }
+
+        // Convert base64 to Blob Object URL for 100% reliable playback without Data URI limits
+        const binaryString = atob(base64);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        const blob = new Blob([bytes.buffer], { type: 'audio/wav' });
+        const blobUrl = URL.createObjectURL(blob);
+
+        const audio = new Audio(blobUrl);
+        currentAudioRef.current = audio;
+
+        audio.onended = () => {
+          URL.revokeObjectURL(blobUrl);
+          resolve();
+        };
+
+        audio.onerror = (err) => {
+          console.warn('[voice] Blob audio error:', err);
+          URL.revokeObjectURL(blobUrl);
+          resolve();
+        };
+
+        audio.play().catch((err) => {
+          console.warn('[voice] Audio play rejected:', err);
+          URL.revokeObjectURL(blobUrl);
+          resolve();
+        });
+      } catch (err) {
+        console.warn('[voice] playAudioBase64 failed:', err);
+        resolve();
+      }
     });
   }
 
