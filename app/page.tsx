@@ -21,13 +21,14 @@ import {
   MicOff,
   Volume2,
   Loader2,
+  Info,
 } from 'lucide-react';
 
 // ─── Voice state machine ───────────────────────────────────────────────────
 type VoiceStatus =
   | 'idle'        // not in a call
   | 'connecting'  // playing greeting
-  | 'listening'   // recording user speech
+  | 'listening'   // recording / listening to user speech
   | 'processing'  // STT + AI reply + TTS in progress
   | 'speaking'    // playing AI audio
   | 'ended';      // call hung up
@@ -61,13 +62,15 @@ export default function Dashboard() {
   // ── Voice state ──────────────────────────────────────────────────────────
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>('idle');
   const [voiceLang, setVoiceLang] = useState<'hi-IN' | 'en-IN'>('hi-IN');
-  const [voiceSpeaker, setVoiceSpeaker] = useState<string>('meera');
+  const [voiceSpeaker, setVoiceSpeaker] = useState<string>('ritu'); // Valid Bulbul v3 speaker
   const [voiceTranscript, setVoiceTranscript] = useState<
     { speaker: 'You' | 'Realty AI'; text: string; time: string }[]
   >([]);
   const [callDuration, setCallDuration] = useState<number>(0);
-  const [isMuted, setIsMuted] = useState<boolean>(false);
   const [audioLevel, setAudioLevel] = useState<number>(0);
+  const [interimText, setInterimText] = useState<string>('');
+  const [voiceInput, setVoiceInput] = useState<string>('');
+  const [noticeMsg, setNoticeMsg] = useState<string>('');
 
   // Voice refs
   const voiceSessionRef = useRef<string>('');
@@ -81,15 +84,17 @@ export default function Dashboard() {
   const voiceStatusRef = useRef<VoiceStatus>('idle');
   const transcriptBottomRef = useRef<HTMLDivElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const recognitionRef = useRef<any>(null);
+  const isProcessingTurnRef = useRef<boolean>(false);
 
-  // Keep ref in sync with state
+  // Keep status ref in sync
   useEffect(() => {
     voiceStatusRef.current = voiceStatus;
   }, [voiceStatus]);
 
   useEffect(() => {
     transcriptBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [voiceTranscript]);
+  }, [voiceTranscript, interimText]);
 
   useEffect(() => {
     const newSession = `${channel}-web-${Math.random().toString(36).slice(2, 8)}`;
@@ -188,7 +193,7 @@ export default function Dashboard() {
     setVoiceTranscript((prev) => [...prev, { speaker, text, time: nowTime() }]);
   }
 
-  /** Play a base64-encoded WAV returned by Sarvam TTS */
+  /** Play base64 WAV audio from Sarvam TTS */
   async function playAudioBase64(base64: string): Promise<void> {
     return new Promise((resolve) => {
       const audio = new Audio(`data:audio/wav;base64,${base64}`);
@@ -199,7 +204,7 @@ export default function Dashboard() {
     });
   }
 
-  /** Call Sarvam TTS via our server proxy */
+  /** Call Sarvam TTS via server proxy with fallback */
   async function speakWithSarvam(text: string): Promise<void> {
     try {
       const res = await fetch('/api/voice/tts', {
@@ -207,15 +212,18 @@ export default function Dashboard() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text, speaker: voiceSpeaker, language_code: voiceLang, pace: 1.05 }),
       });
-      if (!res.ok) throw new Error('TTS failed');
+      if (!res.ok) throw new Error(`TTS HTTP error: ${res.status}`);
       const data = await res.json();
       if (data.audio) {
         await playAudioBase64(data.audio);
+        return;
       }
+      throw new Error('No audio returned from Sarvam');
     } catch (err) {
-      console.warn('[voice] TTS error, falling back to browser TTS:', err);
-      // Graceful fallback to browser speech synthesis
+      console.warn('[voice] Sarvam TTS fallback to browser TTS:', err);
+      // Fallback to browser speech synthesis
       await new Promise<void>((resolve) => {
+        if (typeof window === 'undefined' || !window.speechSynthesis) { resolve(); return; }
         const utter = new SpeechSynthesisUtterance(text);
         utter.lang = voiceLang;
         utter.rate = 1.0;
@@ -228,41 +236,21 @@ export default function Dashboard() {
 
   /** Transcribe recorded audio via Sarvam STT */
   async function transcribeAudio(blob: Blob): Promise<string> {
+    if (!blob || blob.size < 100) return '';
     try {
       const form = new FormData();
       form.append('audio', blob, 'audio.wav');
       form.append('language_code', voiceLang);
       const res = await fetch('/api/voice/stt', { method: 'POST', body: form });
-      if (!res.ok) throw new Error('STT failed');
+      if (!res.ok) return '';
       const data = await res.json();
       return data.transcript || '';
     } catch {
-      // Fallback: use browser STT if Sarvam fails
       return '';
     }
   }
 
-  /** Start recording mic audio */
-  function startRecording() {
-    if (!streamRef.current) return;
-    const mr = new MediaRecorder(streamRef.current, { mimeType: 'audio/webm' });
-    audioChunksRef.current = [];
-    mr.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
-    mr.start();
-    mediaRecorderRef.current = mr;
-  }
-
-  /** Stop recording and return a blob */
-  function stopRecording(): Promise<Blob> {
-    return new Promise((resolve) => {
-      const mr = mediaRecorderRef.current;
-      if (!mr || mr.state === 'inactive') { resolve(new Blob()); return; }
-      mr.onstop = () => { resolve(new Blob(audioChunksRef.current, { type: 'audio/webm' })); };
-      mr.stop();
-    });
-  }
-
-  /** Animate microphone level meter */
+  /** Mic level meter animation */
   function startLevelMeter() {
     if (!analyserRef.current) return;
     const analyser = analyserRef.current;
@@ -282,141 +270,219 @@ export default function Dashboard() {
     setAudioLevel(0);
   }
 
-  /** Main voice turn: record → STT → Gemini → TTS → repeat */
-  const runVoiceTurn = useCallback(async () => {
-    if (voiceStatusRef.current !== 'listening') return;
+  /** Stop media recorder */
+  function stopMediaRecorder(): Promise<Blob> {
+    return new Promise((resolve) => {
+      const mr = mediaRecorderRef.current;
+      if (!mr || mr.state === 'inactive') {
+        resolve(new Blob());
+        return;
+      }
+      mr.onstop = () => {
+        resolve(new Blob(audioChunksRef.current, { type: 'audio/webm' }));
+      };
+      mr.stop();
+    });
+  }
 
-    // Stop recording after 5s silence detection (simple fixed 5s window for demo)
+  /** Stop Web Speech recognition */
+  function stopSpeechRecognition() {
+    if (recognitionRef.current) {
+      try { recognitionRef.current.stop(); } catch {}
+      recognitionRef.current = null;
+    }
+  }
+
+  /** Main voice turn handler: processes recognized or input text */
+  const processTurn = useCallback(async (spokenText?: string) => {
+    if (isProcessingTurnRef.current) return;
+    if (voiceStatusRef.current !== 'listening' && voiceStatusRef.current !== 'speaking') return;
+
+    isProcessingTurnRef.current = true;
+    setNoticeMsg('');
     setVoiceStatus('processing');
     stopLevelMeter();
+    stopSpeechRecognition();
 
-    const blob = await stopRecording();
+    let textToProcess = (spokenText || '').trim();
 
-    // STT
-    let userText = await transcribeAudio(blob);
+    // If no text was provided directly (e.g. timed out), try STT on media recorder
+    if (!textToProcess) {
+      const blob = await stopMediaRecorder();
+      textToProcess = await transcribeAudio(blob);
+    } else {
+      await stopMediaRecorder();
+    }
 
-    // If Sarvam STT returned nothing, try browser STT as fallback (already happened async — skip)
-    if (!userText || userText.trim().length < 2) {
-      // Re-enter listening
-      setVoiceStatus('listening');
-      startRecording();
-      startLevelMeter();
+    setInterimText('');
+
+    if (!textToProcess || textToProcess.length < 2) {
+      isProcessingTurnRef.current = false;
+      setNoticeMsg('No clear speech detected. Speak now or type a message below.');
+      startListeningLoop();
       return;
     }
 
-    addTranscript('You', userText);
+    addTranscript('You', textToProcess);
 
-    // Get AI text reply
-    let aiReply = "Ek second, main aapke liye property details check kar rahi hoon.";
+    // Fetch AI response from Gemini sales pipeline
+    let aiReply = "Aapki inquiry update ho gayi hai. Main Skyline Realty CRM se details check kar rahi hoon.";
     try {
       const res = await fetch('/api/test/message', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId: voiceSessionRef.current, text: userText, channel: 'voice' }),
+        body: JSON.stringify({ sessionId: voiceSessionRef.current, text: textToProcess, channel: 'voice' }),
       });
-      const d = await res.json();
-      aiReply = d.reply || aiReply;
-    } catch { /* use default */ }
+      const data = await res.json();
+      if (data.reply) aiReply = data.reply;
+    } catch {
+      /* fallback */
+    }
 
     addTranscript('Realty AI', aiReply);
 
-    // TTS
+    // Speak response via Sarvam TTS
     setVoiceStatus('speaking');
     await speakWithSarvam(aiReply);
 
-    // Loop back to listening if call is still active (re-read ref after async TTS)
-    // Cast to string to allow TS to compare across all VoiceStatus values
+    isProcessingTurnRef.current = false;
+
+    // Loop back to listening if call is still active
     const statusAfterTTS: string = voiceStatusRef.current;
     if (statusAfterTTS !== 'ended' && statusAfterTTS !== 'idle') {
-      setVoiceStatus('listening');
-      startRecording();
-      startLevelMeter();
+      startListeningLoop();
     }
   }, [voiceLang, voiceSpeaker]);
 
-  /** Start the entire call flow */
+  /** Start listening loop with Browser Speech Recognition + MediaRecorder fallback */
+  const startListeningLoop = useCallback(() => {
+    if (voiceStatusRef.current === 'ended' || voiceStatusRef.current === 'idle') return;
+
+    setVoiceStatus('listening');
+    startLevelMeter();
+    setInterimText('');
+
+    // 1. Start MediaRecorder
+    if (streamRef.current) {
+      try {
+        const mr = new MediaRecorder(streamRef.current, { mimeType: 'audio/webm' });
+        audioChunksRef.current = [];
+        mr.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
+        mr.start();
+        mediaRecorderRef.current = mr;
+      } catch {
+        /* proceed */
+      }
+    }
+
+    // 2. Start Web Speech Recognition if supported
+    const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (SpeechRec) {
+      try {
+        const rec = new SpeechRec();
+        rec.continuous = false;
+        rec.interimResults = true;
+        rec.lang = voiceLang;
+
+        rec.onresult = (e: any) => {
+          let currentTranscript = '';
+          for (let i = e.resultIndex; i < e.results.length; ++i) {
+            currentTranscript += e.results[i][0].transcript;
+          }
+          setInterimText(currentTranscript);
+
+          // If final result, process turn immediately!
+          if (e.results[e.results.length - 1].isFinal) {
+            rec.stop();
+            processTurn(currentTranscript);
+          }
+        };
+
+        rec.onerror = (e: any) => {
+          console.warn('[voice] Web Speech Rec error:', e.error);
+        };
+
+        rec.start();
+        recognitionRef.current = rec;
+      } catch (err) {
+        console.warn('[voice] Web Speech Rec start failed:', err);
+      }
+    }
+  }, [voiceLang, processTurn]);
+
+  /** Start call flow */
   async function startCall() {
     if (voiceStatus !== 'idle' && voiceStatus !== 'ended') return;
 
-    // Get mic access
     let stream: MediaStream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
     } catch {
-      alert('Microphone access denied. Please allow mic access to use Voice Call.');
+      alert('Microphone access denied. Please grant mic permissions in your browser to use Voice Call.');
       return;
     }
 
-    // Set up analyser
-    const ctx = new AudioContext();
-    const analyser = ctx.createAnalyser();
-    analyser.fftSize = 256;
-    const source = ctx.createMediaStreamSource(stream);
-    source.connect(analyser);
-    audioContextRef.current = ctx;
-    analyserRef.current = analyser;
+    // Audio Context for mic meter
+    try {
+      const ctx = new AudioContext();
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      const source = ctx.createMediaStreamSource(stream);
+      source.connect(analyser);
+      audioContextRef.current = ctx;
+      analyserRef.current = analyser;
+    } catch {}
 
     voiceSessionRef.current = `voice-web-${Math.random().toString(36).slice(2, 8)}`;
     setVoiceTranscript([]);
     setCallDuration(0);
+    setNoticeMsg('');
     setVoiceStatus('connecting');
 
-    // Start call timer
     callTimerRef.current = setInterval(() => setCallDuration((d) => d + 1), 1000);
 
-    // Greeting
     const greeting =
       voiceLang === 'hi-IN'
-        ? `Namaste! Main Realty AI hoon, Skyline Realty ki taraf se. Aap kaisi property dhundh rahe hain?`
-        : `Hello! I'm Realty AI from Skyline Realty. How can I help you find your dream property today?`;
+        ? `Namaste! Main Realty AI hoon, Skyline Realty ki taraf se. Aap kaisi property dekh rahe hain?`
+        : `Hello! I'm Realty AI from Skyline Realty. What kind of property are you looking for today?`;
+
     addTranscript('Realty AI', greeting);
     setVoiceStatus('speaking');
     await speakWithSarvam(greeting);
 
-    if (voiceStatusRef.current === 'speaking') {
-      setVoiceStatus('listening');
-      startRecording();
-      startLevelMeter();
+    if (voiceStatusRef.current !== 'ended' && voiceStatusRef.current !== 'idle') {
+      startListeningLoop();
     }
   }
 
-  /** End the call */
+  /** End call flow */
   function endCall() {
-    // Stop audio
     currentAudioRef.current?.pause();
     if (typeof window !== 'undefined') window.speechSynthesis?.cancel();
 
-    // Stop recording
-    mediaRecorderRef.current?.stop();
+    stopSpeechRecognition();
+    stopMediaRecorder();
 
-    // Stop mic
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
 
-    // Stop analyser
     audioContextRef.current?.close();
     stopLevelMeter();
 
-    // Stop timer
     if (callTimerRef.current) clearInterval(callTimerRef.current);
 
     setVoiceStatus('ended');
+    setInterimText('');
   }
 
-  /** Handle press-to-talk: start on down, stop on up */
-  async function handlePTTDown() {
-    if (voiceStatus !== 'listening') return;
-    // Already listening from auto-flow; PTT just triggers immediate processing
-    await runVoiceTurn();
+  /** Handle manual speech input send */
+  function handleSendVoiceInput(textToSend?: string) {
+    const text = (textToSend || voiceInput).trim();
+    if (!text) return;
+    setVoiceInput('');
+    processTurn(text);
   }
-
-  // Auto-trigger processing after listening (5s recording window)
-  useEffect(() => {
-    if (voiceStatus !== 'listening') return;
-    const timer = setTimeout(runVoiceTurn, 5000);
-    return () => clearTimeout(timer);
-  }, [voiceStatus, runVoiceTurn]);
 
   function formatDuration(s: number) {
     const m = Math.floor(s / 60).toString().padStart(2, '0');
@@ -449,7 +515,7 @@ export default function Dashboard() {
       {/* Navigation */}
       <nav style={{ display: 'flex', gap: '8px', borderBottom: '1px solid #232f48', paddingBottom: '12px', marginBottom: '24px' }}>
         <TabButton icon={<MessageSquare size={16} />} label="Web & Social Simulator" active={activeTab === 'chat'} onClick={() => setActiveTab('chat')} />
-        <TabButton icon={<PhoneCall size={16} />} label="Voice Call (Sarvam AI)" active={activeTab === 'voice'} onClick={() => setActiveTab('voice')} />
+        <TabButton icon={<PhoneCall size={16} />} label="Voice Call Agent (Sarvam AI)" active={activeTab === 'voice'} onClick={() => setActiveTab('voice')} />
         <TabButton icon={<Users size={16} />} label="Leads CRM" active={activeTab === 'leads'} onClick={() => setActiveTab('leads')} />
         <TabButton icon={<Building size={16} />} label="Property Catalog" active={activeTab === 'properties'} onClick={() => setActiveTab('properties')} />
         <TabButton icon={<ClipboardList size={16} />} label="Ops & Escalations" active={activeTab === 'ops'} onClick={() => setActiveTab('ops')} />
@@ -526,105 +592,125 @@ export default function Dashboard() {
 
       {/* ── Tab 2: Voice Call (Sarvam AI) ── */}
       {activeTab === 'voice' && (
-        <div style={{ display: 'grid', gridTemplateColumns: '380px 1fr', gap: '20px', alignItems: 'start' }}>
-          {/* Call Panel */}
-          <div style={{ ...panelStyle, textAlign: 'center', padding: '32px 24px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '400px 1fr', gap: '20px', alignItems: 'start' }}>
+          {/* Call Control Console */}
+          <div style={{ ...panelStyle, textAlign: 'center', padding: '28px 24px' }}>
             {/* AI Avatar */}
-            <div style={{ position: 'relative', width: '96px', height: '96px', margin: '0 auto 20px' }}>
+            <div style={{ position: 'relative', width: '100px', height: '100px', margin: '0 auto 16px' }}>
               <div style={{
-                width: '96px', height: '96px', borderRadius: '50%',
+                width: '100px', height: '100px', borderRadius: '50%',
                 background: 'linear-gradient(135deg, #3b82f6, #8b5cf6)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                boxShadow: voiceStatus === 'speaking' ? '0 0 0 8px rgba(59,130,246,0.15), 0 0 0 16px rgba(59,130,246,0.08)' : 'none',
+                boxShadow: voiceStatus === 'speaking'
+                  ? '0 0 0 10px rgba(59,130,246,0.2), 0 0 0 20px rgba(59,130,246,0.1)'
+                  : voiceStatus === 'listening'
+                  ? '0 0 0 10px rgba(16,185,129,0.2), 0 0 0 20px rgba(16,185,129,0.1)'
+                  : 'none',
                 transition: 'box-shadow 0.4s ease',
               }}>
-                <Sparkles size={40} color="#fff" />
+                <Sparkles size={44} color="#fff" />
               </div>
-              {/* Status dot */}
+              {/* Status Dot */}
               <div style={{
                 position: 'absolute', bottom: 4, right: 4,
-                width: 16, height: 16, borderRadius: '50%',
+                width: 18, height: 18, borderRadius: '50%',
                 background: voiceStatus === 'idle' || voiceStatus === 'ended' ? '#6b7280'
                   : voiceStatus === 'listening' ? '#10b981'
                   : voiceStatus === 'speaking' ? '#3b82f6'
                   : '#f59e0b',
-                border: '2px solid #131b2e',
+                border: '3px solid #131b2e',
                 transition: 'background 0.3s',
               }} />
             </div>
 
             <h2 style={{ fontSize: '20px', fontWeight: '700', color: '#fff', marginBottom: '4px' }}>Realty AI Voice Agent</h2>
-            <p style={{ fontSize: '13px', color: '#9ca3af', marginBottom: '20px' }}>
-              Powered by Sarvam AI Bulbul v3 (Indian TTS) + Gemini
+            <p style={{ fontSize: '13px', color: '#9ca3af', marginBottom: '16px' }}>
+              Sarvam AI Bulbul v3 (TTS) + Gemini Sales Intelligence
             </p>
 
             {/* Call duration */}
             {(voiceStatus !== 'idle' && voiceStatus !== 'ended') && (
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', fontSize: '22px', fontWeight: '700', color: '#10b981', marginBottom: '16px', fontVariantNumeric: 'tabular-nums' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', fontSize: '24px', fontWeight: '700', color: '#10b981', marginBottom: '16px', fontVariantNumeric: 'tabular-nums' }}>
                 <Clock size={18} /> {formatDuration(callDuration)}
               </div>
             )}
 
-            {/* Status label */}
-            <div style={{ marginBottom: '20px' }}>
+            {/* Status Pill */}
+            <div style={{ marginBottom: '16px' }}>
               <StatusPill status={voiceStatus} />
             </div>
 
-            {/* Mic level bar */}
+            {/* Mic level bar when listening */}
             {voiceStatus === 'listening' && (
-              <div style={{ marginBottom: '20px' }}>
-                <div style={{ height: '6px', background: '#1e293b', borderRadius: '3px', overflow: 'hidden' }}>
-                  <div style={{ height: '100%', width: `${audioLevel}%`, background: 'linear-gradient(90deg, #10b981, #3b82f6)', borderRadius: '3px', transition: 'width 0.05s' }} />
+              <div style={{ marginBottom: '16px' }}>
+                <div style={{ height: '8px', background: '#1e293b', borderRadius: '4px', overflow: 'hidden' }}>
+                  <div style={{ height: '100%', width: `${Math.max(10, audioLevel)}%`, background: 'linear-gradient(90deg, #10b981, #3b82f6)', borderRadius: '4px', transition: 'width 0.05s ease' }} />
                 </div>
-                <p style={{ fontSize: '11px', color: '#6b7280', marginTop: '4px' }}>Mic level — speak clearly</p>
+                <p style={{ fontSize: '12px', color: '#10b981', marginTop: '6px', fontWeight: '500' }}>
+                  🎙️ Listening live... speak your property query
+                </p>
               </div>
             )}
 
-            {/* Language & voice picker */}
-            {voiceStatus === 'idle' || voiceStatus === 'ended' ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '24px', textAlign: 'left' }}>
-                <label style={{ fontSize: '12px', color: '#9ca3af' }}>Language</label>
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  {([['hi-IN', 'Hindi 🇮🇳'], ['en-IN', 'English (IN) 🇮🇳']] as const).map(([code, label]) => (
-                    <button key={code} onClick={() => {
-                      setVoiceLang(code);
-                      setVoiceSpeaker(code === 'hi-IN' ? 'meera' : 'arvind');
-                    }} style={{ flex: 1, padding: '8px', borderRadius: '6px', border: `1px solid ${voiceLang === code ? '#3b82f6' : '#232f48'}`, background: voiceLang === code ? 'rgba(59,130,246,0.15)' : '#0b0f19', color: voiceLang === code ? '#60a5fa' : '#9ca3af', fontSize: '12px', cursor: 'pointer' }}>
-                      {label}
-                    </button>
-                  ))}
+            {/* Notice / Feedback banner */}
+            {noticeMsg && (
+              <div style={{ marginBottom: '16px', padding: '10px 12px', borderRadius: '8px', background: 'rgba(245,158,11,0.15)', border: '1px solid rgba(245,158,11,0.3)', color: '#fbbf24', fontSize: '12px', textAlign: 'left', display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <Info size={16} style={{ flexShrink: 0 }} />
+                <span>{noticeMsg}</span>
+              </div>
+            )}
+
+            {/* Language & Voice Selector */}
+            {(voiceStatus === 'idle' || voiceStatus === 'ended') && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '24px', textAlign: 'left' }}>
+                <div>
+                  <label style={{ fontSize: '12px', color: '#9ca3af', marginBottom: '6px', display: 'block' }}>Select Language</label>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    {([['hi-IN', 'Hindi (हिन्दी) 🇮🇳'], ['en-IN', 'English (Indian) 🇮🇳']] as const).map(([code, label]) => (
+                      <button key={code} onClick={() => {
+                        setVoiceLang(code);
+                        setVoiceSpeaker(code === 'hi-IN' ? 'ritu' : 'rahul');
+                      }} style={{ flex: 1, padding: '10px', borderRadius: '6px', border: `1px solid ${voiceLang === code ? '#3b82f6' : '#232f48'}`, background: voiceLang === code ? 'rgba(59,130,246,0.15)' : '#0b0f19', color: voiceLang === code ? '#60a5fa' : '#9ca3af', fontSize: '12px', fontWeight: '600', cursor: 'pointer' }}>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
-                <label style={{ fontSize: '12px', color: '#9ca3af', marginTop: '4px' }}>Voice</label>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
-                  {(voiceLang === 'hi-IN'
-                    ? [['meera', 'Meera ♀'], ['arvind', 'Arvind ♂'], ['amol', 'Amol ♂'], ['anushka', 'Anushka ♀']]
-                    : [['arvind', 'Arvind ♂'], ['meera', 'Meera ♀'], ['anushka', 'Anushka ♀'], ['amol', 'Amol ♂']]
-                  ).map(([v, label]) => (
-                    <button key={v} onClick={() => setVoiceSpeaker(v)} style={{ padding: '6px', borderRadius: '6px', border: `1px solid ${voiceSpeaker === v ? '#8b5cf6' : '#232f48'}`, background: voiceSpeaker === v ? 'rgba(139,92,246,0.15)' : '#0b0f19', color: voiceSpeaker === v ? '#a78bfa' : '#9ca3af', fontSize: '12px', cursor: 'pointer' }}>
-                      {label}
-                    </button>
-                  ))}
+                <div>
+                  <label style={{ fontSize: '12px', color: '#9ca3af', marginBottom: '6px', display: 'block' }}>Select Voice (Sarvam Bulbul v3)</label>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                    {[
+                      ['ritu', 'Ritu (Female) ♀'],
+                      ['aditya', 'Aditya (Male) ♂'],
+                      ['simran', 'Simran (Female) ♀'],
+                      ['rahul', 'Rahul (Male) ♂'],
+                    ].map(([v, label]) => (
+                      <button key={v} onClick={() => setVoiceSpeaker(v)} style={{ padding: '8px', borderRadius: '6px', border: `1px solid ${voiceSpeaker === v ? '#8b5cf6' : '#232f48'}`, background: voiceSpeaker === v ? 'rgba(139,92,246,0.15)' : '#0b0f19', color: voiceSpeaker === v ? '#a78bfa' : '#9ca3af', fontSize: '12px', cursor: 'pointer' }}>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
-            ) : null}
+            )}
 
-            {/* Action buttons */}
-            <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
+            {/* Action Buttons */}
+            <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', marginBottom: '20px' }}>
               {voiceStatus === 'idle' || voiceStatus === 'ended' ? (
                 <button
                   id="start-call-btn"
                   onClick={startCall}
-                  style={{ padding: '14px 32px', borderRadius: '50px', border: 'none', background: 'linear-gradient(135deg, #10b981, #059669)', color: '#fff', fontWeight: '700', fontSize: '15px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', boxShadow: '0 4px 20px rgba(16,185,129,0.4)' }}>
-                  <PhoneCall size={20} /> Start Call
+                  style={{ padding: '14px 36px', borderRadius: '50px', border: 'none', background: 'linear-gradient(135deg, #10b981, #059669)', color: '#fff', fontWeight: '700', fontSize: '16px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '10px', boxShadow: '0 4px 20px rgba(16,185,129,0.4)' }}>
+                  <PhoneCall size={20} /> Start Voice Call
                 </button>
               ) : (
                 <>
                   {voiceStatus === 'listening' && (
                     <button
-                      onClick={handlePTTDown}
-                      style={{ padding: '12px 20px', borderRadius: '50px', background: 'rgba(59,130,246,0.2)', color: '#60a5fa', fontWeight: '600', fontSize: '13px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', border: '1px solid rgba(59,130,246,0.4)' } as React.CSSProperties}>
-                      <Mic size={16} /> Done Speaking
+                      onClick={() => processTurn(interimText)}
+                      style={{ padding: '12px 20px', borderRadius: '50px', background: '#2563eb', color: '#fff', fontWeight: '600', fontSize: '13px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', border: 'none', boxShadow: '0 4px 12px rgba(37,99,235,0.4)' }}>
+                      <Mic size={16} /> Send Speech
                     </button>
                   )}
                   <button
@@ -637,69 +723,110 @@ export default function Dashboard() {
               )}
             </div>
 
-            {voiceStatus === 'ended' && (
-              <p style={{ marginTop: '16px', fontSize: '12px', color: '#9ca3af' }}>
-                Call ended · Duration: {formatDuration(callDuration)}
-              </p>
-            )}
+            {/* Interactive Speech Input & Quick Chips during call */}
+            {(voiceStatus === 'listening' || voiceStatus === 'speaking' || voiceStatus === 'processing') && (
+              <div style={{ marginTop: '16px', borderTop: '1px solid #1e293b', paddingTop: '16px', textAlign: 'left' }}>
+                <label style={{ fontSize: '12px', color: '#9ca3af', marginBottom: '8px', display: 'block' }}>
+                  💬 Speak into mic or type a test message:
+                </label>
 
-            <div style={{ marginTop: '24px', padding: '12px', borderRadius: '8px', background: '#0b0f19', border: '1px solid #1e293b', textAlign: 'left' }}>
-              <p style={{ fontSize: '11px', color: '#6b7280', lineHeight: '1.6' }}>
-                🎙️ <strong style={{ color: '#9ca3af' }}>How it works:</strong> Speak → Sarvam Saaras v2 STT transcribes → Gemini replies → Sarvam Bulbul v3 speaks back. Fully Indian voice AI pipeline.<br />
-                💡 Tip: Press <strong style={{ color: '#60a5fa' }}>Done Speaking</strong> anytime to skip the 5s window.
-              </p>
-            </div>
+                <div style={{ display: 'flex', gap: '8px', marginBottom: '10px' }}>
+                  <input
+                    type="text"
+                    placeholder="e.g. 3BHK flat in Noida under 1.5 Cr..."
+                    value={voiceInput}
+                    onChange={(e) => setVoiceInput(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleSendVoiceInput()}
+                    style={{ flex: 1, padding: '10px 14px', borderRadius: '8px', border: '1px solid #232f48', background: '#0b0f19', color: '#fff', fontSize: '13px', outline: 'none' }}
+                  />
+                  <button
+                    onClick={() => handleSendVoiceInput()}
+                    style={{ padding: '10px 16px', borderRadius: '8px', border: 'none', background: '#3b82f6', color: '#fff', fontWeight: '600', fontSize: '13px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <Send size={14} /> Send
+                  </button>
+                </div>
+
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                  <QuickVoiceChip text="Noida 3BHK under 1.5 Cr?" onClick={(t) => handleSendVoiceInput(t)} />
+                  <QuickVoiceChip text="Book Saturday site visit" onClick={(t) => handleSendVoiceInput(t)} />
+                  <QuickVoiceChip text="Connect with sales manager" onClick={(t) => handleSendVoiceInput(t)} />
+                </div>
+              </div>
+            )}
           </div>
 
-          {/* Transcript Panel */}
+          {/* Live Transcript & Real-Time Voice Wave Panel */}
           <div style={panelStyle}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', borderBottom: '1px solid #232f48', paddingBottom: '12px' }}>
-              <h3 style={{ fontSize: '16px', fontWeight: '600', color: '#fff', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <Volume2 size={16} style={{ color: '#8b5cf6' }} /> Live Transcript
+              <h3 style={{ fontSize: '16px', fontWeight: '600', color: '#fff', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Volume2 size={18} style={{ color: '#8b5cf6' }} /> Live Call Transcript
               </h3>
               {voiceTranscript.length > 0 && (
                 <button onClick={() => setVoiceTranscript([])} style={iconBtnStyle}>
-                  <RefreshCw size={12} /> Clear
+                  <RefreshCw size={12} /> Clear Log
                 </button>
               )}
             </div>
 
-            <div style={{ height: '480px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              {voiceTranscript.length === 0 && (
+            <div style={{ height: '520px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '14px', paddingRight: '4px' }}>
+              {voiceTranscript.length === 0 && !interimText && (
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '12px' }}>
                   <div style={{ width: '64px', height: '64px', borderRadius: '50%', background: 'rgba(139,92,246,0.1)', border: '1px solid rgba(139,92,246,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                     <Mic size={28} color="#a78bfa" />
                   </div>
-                  <p style={{ color: '#6b7280', fontSize: '14px', textAlign: 'center' }}>Start a call to see the live transcript here.<br />Both STT and TTS are powered by Sarvam AI.</p>
+                  <p style={{ color: '#6b7280', fontSize: '14px', textAlign: 'center', lineHeight: '1.6' }}>
+                    Click <strong>Start Voice Call</strong> to speak live with Realty AI.<br />
+                    Supports real-time Web Speech recognition + Sarvam AI Bulbul v3 TTS!
+                  </p>
                 </div>
               )}
+
+              {/* Speech Log */}
               {voiceTranscript.map((t, i) => (
                 <div key={i} style={{ display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
                   <div style={{
-                    flexShrink: 0, width: '32px', height: '32px', borderRadius: '50%',
+                    flexShrink: 0, width: '36px', height: '36px', borderRadius: '50%',
                     background: t.speaker === 'You' ? 'rgba(59,130,246,0.2)' : 'rgba(139,92,246,0.2)',
                     border: `1px solid ${t.speaker === 'You' ? 'rgba(59,130,246,0.4)' : 'rgba(139,92,246,0.4)'}`,
-                    display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: '700',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '13px', fontWeight: '700',
                     color: t.speaker === 'You' ? '#60a5fa' : '#a78bfa',
                   }}>
                     {t.speaker === 'You' ? 'U' : 'AI'}
                   </div>
                   <div style={{ flex: 1 }}>
-                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '2px' }}>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '4px' }}>
                       <span style={{ fontSize: '13px', fontWeight: '600', color: t.speaker === 'You' ? '#60a5fa' : '#a78bfa' }}>{t.speaker}</span>
                       <span style={{ fontSize: '11px', color: '#4b5563' }}>{t.time}</span>
                     </div>
-                    <div style={{ fontSize: '14px', color: '#e5e7eb', lineHeight: '1.55', background: t.speaker === 'Realty AI' ? '#0f1929' : 'transparent', padding: t.speaker === 'Realty AI' ? '10px 14px' : '0', borderRadius: '8px', border: t.speaker === 'Realty AI' ? '1px solid #1e293b' : 'none' }}>
+                    <div style={{ fontSize: '14px', color: '#e5e7eb', lineHeight: '1.6', background: t.speaker === 'Realty AI' ? '#0f1929' : 'rgba(255,255,255,0.03)', padding: '10px 14px', borderRadius: '10px', border: t.speaker === 'Realty AI' ? '1px solid #1e293b' : '1px solid rgba(255,255,255,0.06)' }}>
                       {t.text}
                     </div>
                   </div>
                 </div>
               ))}
-              {voiceStatus === 'processing' && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', color: '#9ca3af', fontSize: '13px', fontStyle: 'italic' }}>
-                  <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> Processing with Sarvam AI + Gemini...
+
+              {/* Live interim text preview as user speaks */}
+              {interimText && (
+                <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-start', opacity: 0.8 }}>
+                  <div style={{ flexShrink: 0, width: '36px', height: '36px', borderRadius: '50%', background: 'rgba(16,185,129,0.2)', border: '1px solid rgba(16,185,129,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '13px', fontWeight: '700', color: '#10b981' }}>
+                    U
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <span style={{ fontSize: '12px', color: '#10b981', fontStyle: 'italic', marginBottom: '2px', display: 'block' }}>Speaking live...</span>
+                    <div style={{ fontSize: '14px', color: '#6ee7b7', fontStyle: 'italic', background: 'rgba(16,185,129,0.1)', padding: '10px 14px', borderRadius: '10px', border: '1px dashed rgba(16,185,129,0.3)' }}>
+                      "{interimText}"
+                    </div>
+                  </div>
                 </div>
               )}
+
+              {/* Processing indicator */}
+              {voiceStatus === 'processing' && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', color: '#60a5fa', fontSize: '13px', fontStyle: 'italic', padding: '10px 14px', background: 'rgba(59,130,246,0.1)', borderRadius: '8px', border: '1px solid rgba(59,130,246,0.2)' }}>
+                  <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} /> Processing query with Sarvam AI + Gemini...
+                </div>
+              )}
+
               <div ref={transcriptBottomRef} />
             </div>
           </div>
@@ -748,20 +875,40 @@ export default function Dashboard() {
             <h2 style={{ fontSize: '18px', fontWeight: '600' }}>Properties Inventory</h2>
             <button onClick={fetchProperties} style={iconBtnStyle}><RefreshCw size={14} /> Refresh</button>
           </div>
-          {loadingProperties ? <p style={{ color: '#9ca3af' }}>Loading inventory...</p> : (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '16px' }}>
+          {loadingProperties ? <p style={{ color: '#9ca3af' }}>Loading properties...</p> : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '16px' }}>
               {properties.map((p) => (
-                <div key={p.id} style={{ background: '#0b0f19', border: '1px solid #232f48', borderRadius: '8px', padding: '16px' }}>
-                  <h3 style={{ fontSize: '16px', fontWeight: '600', color: '#fff', marginBottom: '4px' }}>{p.project_name}</h3>
-                  <p style={{ fontSize: '13px', color: '#9ca3af', marginBottom: '12px' }}><MapPin size={12} display="inline" /> {p.locality}, {p.city}</p>
-                  <p style={{ fontSize: '16px', fontWeight: '700', color: '#10b981', marginBottom: '12px' }}>
-                    ₹{(p.price_min / 10000000).toFixed(2)} Cr - ₹{(p.price_max / 10000000).toFixed(2)} Cr
-                  </p>
-                  <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                    <span style={chipStyle}>{p.bhk} BHK</span>
-                    <span style={chipStyle}>{p.property_type}</span>
-                    <span style={chipStyle}>{p.status}</span>
+                <div key={p.id} style={{ background: '#0b0f19', border: '1px solid #232f48', borderRadius: '10px', padding: '16px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
+                    <h3 style={{ fontSize: '16px', fontWeight: '700', color: '#fff' }}>{p.title}</h3>
+                    <span style={{ fontSize: '11px', background: 'rgba(59,130,246,0.15)', color: '#60a5fa', padding: '2px 8px', borderRadius: '4px', textTransform: 'uppercase', fontWeight: '600' }}>
+                      {p.possession_status || 'Active'}
+                    </span>
                   </div>
+                  <p style={{ fontSize: '13px', color: '#9ca3af', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <MapPin size={14} /> {p.location}, {p.city}
+                  </p>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', color: '#e5e7eb', background: '#131b2e', padding: '10px', borderRadius: '6px', marginBottom: '12px' }}>
+                    <div>
+                      <span style={{ color: '#9ca3af', fontSize: '11px', display: 'block' }}>Type</span>
+                      <strong>{p.bhk_type} Flat</strong>
+                    </div>
+                    <div>
+                      <span style={{ color: '#9ca3af', fontSize: '11px', display: 'block' }}>Area</span>
+                      <strong>{p.sqft ? `${p.sqft} sqft` : '—'}</strong>
+                    </div>
+                    <div>
+                      <span style={{ color: '#9ca3af', fontSize: '11px', display: 'block' }}>Price</span>
+                      <strong style={{ color: '#10b981' }}>₹{(p.price / 10000000).toFixed(2)} Cr</strong>
+                    </div>
+                  </div>
+                  {Array.isArray(p.amenities) && p.amenities.length > 0 && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                      {p.amenities.slice(0, 4).map((a: string, idx: number) => (
+                        <span key={idx} style={{ fontSize: '11px', background: '#1e293b', color: '#9ca3af', padding: '2px 6px', borderRadius: '4px' }}>{a}</span>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -769,108 +916,178 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* ── Tab 5: Ops ── */}
+      {/* ── Tab 5: Ops & Escalations ── */}
       {activeTab === 'ops' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
           <div style={panelStyle}>
-            <h2 style={{ fontSize: '18px', fontWeight: '600', marginBottom: '16px' }}>Site Visit Bookings</h2>
-            <table style={tableStyle}>
-              <thead><tr><th>Lead</th><th>Property</th><th>Requested Date</th><th>Status</th></tr></thead>
-              <tbody>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <h2 style={{ fontSize: '16px', fontWeight: '600' }}>Scheduled Site Visits</h2>
+              <button onClick={fetchOps} style={iconBtnStyle}><RefreshCw size={14} /> Refresh</button>
+            </div>
+            {siteVisits.length === 0 ? <p style={{ color: '#9ca3af', fontSize: '13px' }}>No site visits recorded yet.</p> : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                 {siteVisits.map((v) => (
-                  <tr key={v.id}>
-                    <td>{v.leads?.name || v.leads?.channel || '—'}</td>
-                    <td>{v.properties?.project_name || 'General Visit'}</td>
-                    <td>{v.requested_date || '—'}</td>
-                    <td><span style={statusBadgeStyle(v.status)}>{v.status}</span></td>
-                  </tr>
+                  <div key={v.id} style={{ padding: '12px', background: '#0b0f19', border: '1px solid #232f48', borderRadius: '8px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px', fontWeight: '600', color: '#fff' }}>
+                      <span>Visit #{v.id.slice(0, 6)}</span>
+                      <span style={{ color: '#10b981' }}>{v.status || 'Scheduled'}</span>
+                    </div>
+                    <p style={{ fontSize: '13px', color: '#9ca3af', marginTop: '4px' }}>
+                      Date: {new Date(v.scheduled_time || v.visit_date).toLocaleString()}
+                    </p>
+                  </div>
                 ))}
-              </tbody>
-            </table>
+              </div>
+            )}
           </div>
+
           <div style={panelStyle}>
-            <h2 style={{ fontSize: '18px', fontWeight: '600', marginBottom: '16px' }}>Human Agent Escalations</h2>
-            <table style={tableStyle}>
-              <thead><tr><th>Lead</th><th>Reason</th><th>Urgency</th><th>Status</th></tr></thead>
-              <tbody>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <h2 style={{ fontSize: '16px', fontWeight: '600' }}>Human Escalations &amp; Support</h2>
+              <button onClick={fetchOps} style={iconBtnStyle}><RefreshCw size={14} /> Refresh</button>
+            </div>
+            {escalations.length === 0 ? <p style={{ color: '#9ca3af', fontSize: '13px' }}>No escalated leads pending.</p> : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                 {escalations.map((e) => (
-                  <tr key={e.id}>
-                    <td>{e.leads?.name || e.leads?.channel || '—'}</td>
-                    <td>{e.reason}</td><td>{e.urgency}</td>
-                    <td><span style={statusBadgeStyle(e.status)}>{e.status}</span></td>
-                  </tr>
+                  <div key={e.id} style={{ padding: '12px', background: '#0b0f19', border: '1px solid #232f48', borderRadius: '8px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px', fontWeight: '600', color: '#fff' }}>
+                      <span>Escalation #{e.id.slice(0, 6)}</span>
+                      <span style={{ color: '#ef4444' }}>{e.status || 'Pending'}</span>
+                    </div>
+                    <p style={{ fontSize: '13px', color: '#9ca3af', marginTop: '4px' }}>
+                      Reason: {e.reason || 'Human agent requested by customer'}
+                    </p>
+                  </div>
                 ))}
-              </tbody>
-            </table>
+              </div>
+            )}
           </div>
         </div>
       )}
-
-      <style>{`
-        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-        @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.5; } }
-        table th { padding: 10px 12px; background: #0b0f19; color: #9ca3af; font-size: 12px; font-weight: 600; text-align: left; }
-        table td { padding: 10px 12px; border-bottom: 1px solid #1e293b; }
-        table tr:hover td { background: rgba(59,130,246,0.04); }
-      `}</style>
     </div>
   );
 }
 
-// ── Status pill ──────────────────────────────────────────────────────────────
-function StatusPill({ status }: { status: VoiceStatus }) {
-  const config: Record<VoiceStatus, { label: string; color: string; bg: string; icon?: React.ReactNode }> = {
-    idle:       { label: 'Ready to Call',   color: '#9ca3af', bg: 'rgba(156,163,175,0.1)' },
-    connecting: { label: 'Connecting...',   color: '#f59e0b', bg: 'rgba(245,158,11,0.1)', icon: <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> },
-    listening:  { label: '● Listening',     color: '#10b981', bg: 'rgba(16,185,129,0.12)' },
-    processing: { label: 'AI Processing...', color: '#3b82f6', bg: 'rgba(59,130,246,0.12)', icon: <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> },
-    speaking:   { label: '▶ AI Speaking',   color: '#8b5cf6', bg: 'rgba(139,92,246,0.12)' },
-    ended:      { label: 'Call Ended',      color: '#6b7280', bg: 'rgba(107,114,128,0.1)' },
-  };
-  const c = config[status];
-  return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '6px 14px', borderRadius: '20px', background: c.bg, color: c.color, fontSize: '13px', fontWeight: '600', border: `1px solid ${c.color}30` }}>
-      {c.icon} {c.label}
-    </span>
-  );
-}
+// ── Components ─────────────────────────────────────────────────────────────
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
 function TabButton({ icon, label, active, onClick }: { icon: React.ReactNode; label: string; active: boolean; onClick: () => void }) {
   return (
-    <button onClick={onClick} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 16px', borderRadius: '8px', border: 'none', background: active ? '#2563eb' : 'transparent', color: active ? '#fff' : '#9ca3af', fontSize: '14px', fontWeight: '500', cursor: 'pointer' }}>
+    <button onClick={onClick} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 18px', borderRadius: '8px', border: 'none', background: active ? '#3b82f6' : 'transparent', color: active ? '#fff' : '#9ca3af', fontSize: '14px', fontWeight: '600', cursor: 'pointer', transition: 'all 0.2s' }}>
       {icon} {label}
     </button>
   );
 }
+
 function QuickChip({ text, onClick }: { text: string; onClick: (t: string) => void }) {
   return (
-    <button onClick={() => onClick(text)} style={{ padding: '4px 10px', borderRadius: '12px', border: '1px solid #232f48', background: '#131b2e', color: '#9ca3af', fontSize: '12px', whiteSpace: 'nowrap', cursor: 'pointer' }}>
+    <button onClick={() => onClick(text)} style={{ whiteSpace: 'nowrap', padding: '6px 12px', borderRadius: '16px', border: '1px solid #232f48', background: '#131b2e', color: '#9ca3af', fontSize: '12px', cursor: 'pointer' }}>
       {text}
     </button>
   );
 }
-function LeadRow({ label, value }: { label: string; value: string }) {
+
+function QuickVoiceChip({ text, onClick }: { text: string; onClick: (t: string) => void }) {
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #1e293b', paddingBottom: '4px' }}>
+    <button onClick={() => onClick(text)} style={{ padding: '4px 10px', borderRadius: '12px', border: '1px solid rgba(59,130,246,0.3)', background: 'rgba(59,130,246,0.1)', color: '#60a5fa', fontSize: '11px', cursor: 'pointer' }}>
+      "{text}"
+    </button>
+  );
+}
+
+function LeadRow({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #1e293b', paddingBottom: '6px' }}>
       <span style={{ color: '#9ca3af' }}>{label}</span>
-      <span style={{ color: '#fff', fontWeight: '500' }}>{value}</span>
+      <strong style={{ color: '#fff', textAlign: 'right' }}>{value}</strong>
     </div>
   );
 }
 
-const panelStyle: React.CSSProperties = { background: '#131b2e', border: '1px solid #232f48', borderRadius: '12px', padding: '20px' };
-const iconBtnStyle: React.CSSProperties = { padding: '6px 12px', borderRadius: '6px', border: '1px solid #232f48', background: '#0b0f19', color: '#fff', fontSize: '13px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' };
-const tableStyle: React.CSSProperties = { width: '100%', borderCollapse: 'collapse', fontSize: '13px', color: '#e5e7eb', textAlign: 'left' };
-const chipStyle: React.CSSProperties = { fontSize: '11px', padding: '2px 8px', borderRadius: '4px', background: '#1e293b', color: '#9ca3af', border: '1px solid #334155' };
+function StatusPill({ status }: { status: VoiceStatus }) {
+  const configs: Record<VoiceStatus, { label: string; bg: string; color: string; border: string }> = {
+    idle: { label: 'Ready for Call', bg: 'rgba(107,114,128,0.15)', color: '#9ca3af', border: '1px solid rgba(107,114,128,0.3)' },
+    connecting: { label: 'Connecting Agent...', bg: 'rgba(245,158,11,0.15)', color: '#fbbf24', border: '1px solid rgba(245,158,11,0.3)' },
+    listening: { label: '🎙️ Listening to You...', bg: 'rgba(16,185,129,0.15)', color: '#34d399', border: '1px solid rgba(16,185,129,0.3)' },
+    processing: { label: '⚡ Thinking & Querying...', bg: 'rgba(59,130,246,0.15)', color: '#60a5fa', border: '1px solid rgba(59,130,246,0.3)' },
+    speaking: { label: '🔊 Agent Speaking...', bg: 'rgba(139,92,246,0.15)', color: '#a78bfa', border: '1px solid rgba(139,92,246,0.3)' },
+    ended: { label: 'Call Ended', bg: 'rgba(239,68,68,0.15)', color: '#f87171', border: '1px solid rgba(239,68,68,0.3)' },
+  };
+
+  const cfg = configs[status] || configs.idle;
+
+  return (
+    <span style={{ display: 'inline-block', padding: '6px 16px', borderRadius: '20px', background: cfg.bg, color: cfg.color, border: cfg.border, fontSize: '13px', fontWeight: '600' }}>
+      {cfg.label}
+    </span>
+  );
+}
+
+// ── Styles ─────────────────────────────────────────────────────────────────
+
+const panelStyle: React.CSSProperties = {
+  background: '#131b2e',
+  borderRadius: '12px',
+  border: '1px solid #232f48',
+  padding: '20px',
+};
+
+const iconBtnStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: '4px',
+  padding: '6px 10px',
+  borderRadius: '6px',
+  border: '1px solid #232f48',
+  background: '#0b0f19',
+  color: '#9ca3af',
+  fontSize: '12px',
+  cursor: 'pointer',
+};
+
+const tableStyle: React.CSSProperties = {
+  width: '100%',
+  borderCollapse: 'collapse',
+  fontSize: '13px',
+  color: '#e5e7eb',
+};
 
 function healthBadgeStyle(ok: boolean): React.CSSProperties {
-  return { display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 12px', borderRadius: '20px', fontSize: '12px', fontWeight: '500', background: ok ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)', color: ok ? '#10b981' : '#ef4444', border: `1px solid ${ok ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)'}` };
+  return {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    padding: '6px 12px',
+    borderRadius: '20px',
+    fontSize: '12px',
+    fontWeight: '600',
+    background: ok ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)',
+    color: ok ? '#34d399' : '#f87171',
+    border: `1px solid ${ok ? 'rgba(16,185,129,0.3)' : 'rgba(239,68,68,0.3)'}`,
+  };
 }
-function statusBadgeStyle(_: string): React.CSSProperties {
-  return { padding: '2px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: '600', background: '#1e293b', color: '#60a5fa', border: '1px solid #2563eb' };
+
+function statusBadgeStyle(status: string): React.CSSProperties {
+  const isHot = status === 'qualified' || status === 'visit_scheduled';
+  return {
+    padding: '2px 8px',
+    borderRadius: '4px',
+    fontSize: '11px',
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    background: isHot ? 'rgba(16,185,129,0.15)' : 'rgba(107,114,128,0.15)',
+    color: isHot ? '#34d399' : '#9ca3af',
+  };
 }
+
 function tempBadgeStyle(temp: string): React.CSSProperties {
-  const isHot = temp === 'HOT', isWarm = temp === 'WARM';
-  return { padding: '2px 6px', borderRadius: '4px', fontSize: '11px', fontWeight: '600', background: isHot ? 'rgba(239,68,68,0.2)' : isWarm ? 'rgba(245,158,11,0.2)' : 'rgba(107,114,128,0.2)', color: isHot ? '#f87171' : isWarm ? '#fbbf24' : '#9ca3af' };
+  const isHot = temp === 'HOT';
+  const isWarm = temp === 'WARM';
+  return {
+    padding: '2px 8px',
+    borderRadius: '4px',
+    fontSize: '11px',
+    fontWeight: '600',
+    background: isHot ? 'rgba(239,68,68,0.15)' : isWarm ? 'rgba(245,158,11,0.15)' : 'rgba(59,130,246,0.15)',
+    color: isHot ? '#f87171' : isWarm ? '#fbbf24' : '#60a5fa',
+  };
 }

@@ -22,6 +22,24 @@ export async function POST(req: NextRequest) {
     // Truncate to 2500 chars (Sarvam REST API limit)
     const truncatedText = text.slice(0, 2500);
 
+    // Map legacy / invalid speaker names to valid Bulbul v3 speakers
+    const validBulbulV3Speakers = [
+      'aditya', 'ritu', 'ashutosh', 'priya', 'neha', 'rahul', 'pooja', 'rohan',
+      'simran', 'kavya', 'amit', 'dev', 'ishita', 'shreya', 'ratan', 'varun',
+      'manan', 'sumit', 'roopa', 'kabir', 'aayan', 'shubh', 'advait', 'anand',
+      'tanya', 'tarun', 'sunny', 'mani', 'gokul', 'vijay', 'shruti', 'suhani',
+      'mohit', 'kavitha', 'rehan', 'soham', 'rupali'
+    ];
+
+    let safeSpeaker = speaker.toLowerCase();
+    if (!validBulbulV3Speakers.includes(safeSpeaker)) {
+      if (safeSpeaker.includes('male') || safeSpeaker === 'arvind' || safeSpeaker === 'amol') {
+        safeSpeaker = 'aditya';
+      } else {
+        safeSpeaker = 'ritu';
+      }
+    }
+
     const response = await fetch(SARVAM_TTS_URL, {
       method: 'POST',
       headers: {
@@ -31,7 +49,7 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify({
         inputs: [truncatedText],
         target_language_code: language_code,
-        speaker,
+        speaker: safeSpeaker,
         pace,
         pitch: 0,
         loudness: 1.5,
