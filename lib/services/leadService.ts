@@ -14,7 +14,7 @@ export async function getOrCreateLead({ channel, externalUserId, name, phone }: 
   const { data: existing, error: findErr } = await supabase
     .from('leads')
     .select('*')
-    .eq('org_id', ORG_ID)
+  
     .eq('channel', channel)
     .eq('external_user_id', externalUserId)
     .maybeSingle();
@@ -106,7 +106,6 @@ export async function listLeads({ limit = 100 } = {}) {
   const { data, error } = await supabase
     .from('leads')
     .select('*')
-    .eq('org_id', ORG_ID)
     .order('updated_at', { ascending: false })
     .limit(limit);
   if (error) throw error;

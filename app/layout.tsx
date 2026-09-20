@@ -1,5 +1,5 @@
 import './globals.css';
-import React from 'react';
+
 
 export const metadata = {
   title: 'Realty AI — Multilingual Real Estate Sales Agent & CRM',
