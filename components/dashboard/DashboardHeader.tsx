@@ -5,7 +5,7 @@ import { healthBadgeStyle } from '@/lib/dashboard/styles';
 import { ActiveTab, HealthState } from '@/types/dashboard';
 
 export function DashboardHeader({
-  health,
+  health, 
   activeTab,
   setActiveTab,
 }: {
@@ -25,10 +25,10 @@ export function DashboardHeader({
           </p>
         </div>
         <div style={{ display: 'flex', gap: '12px' }}>
-          <div style={healthBadgeStyle(health.dbOk)}>
+         <div className={healthBadgeStyle(health.dbOk)}>
             {health.dbOk ? <CheckCircle2 size={14} /> : <XCircle size={14} />} Supabase DB: {health.dbOk ? 'Connected' : 'Disconnected'}
           </div>
-          <div style={healthBadgeStyle(health.geminiOk)}>
+          <div className={healthBadgeStyle(health.dbOk)}>
             {health.geminiOk ? <CheckCircle2 size={14} /> : <XCircle size={14} />} Gemini AI Engine: {health.geminiOk ? 'Active' : 'Offline'}
           </div>
         </div>

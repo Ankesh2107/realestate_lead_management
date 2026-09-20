@@ -8,7 +8,7 @@ export const iconBtnClass =
 
 export const tableClass = 'w-full border-collapse text-[13px] text-ink';
 
-export function healthBadgeClass(ok: boolean) {
+export function healthBadgeStyle(ok: boolean) {
   return [
     'flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold',
     ok ? 'bg-success-soft text-success border-success/20' : 'bg-danger-soft text-danger border-danger/20',
