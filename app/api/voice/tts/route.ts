@@ -84,7 +84,12 @@ export async function POST(req: NextRequest) {
         pace: typeof pace === 'number' ? Math.max(0.7, Math.min(1.3, pace)) : 1.0,
         pitch: 0,
         loudness: 1.0,
-        speech_sample_rate: 24000,
+        // 16kHz keeps speech perfectly clear while cutting the audio payload
+        // size roughly in half vs 24kHz — on a mobile connection that's a
+        // real, directly-felt chunk of the per-turn latency, not a cosmetic
+        // change. (The separate pre-recorded marketing-demo audio generator
+        // is untouched by this — this only affects the live interactive call.)
+        speech_sample_rate: 16000,
         enable_preprocessing: true,
         model: 'bulbul:v3',
       }),

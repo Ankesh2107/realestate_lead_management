@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Realty AI — Product Demo</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<div id="stage">
+  <div class="mesh"><span></span><span></span><span></span></div>
+  <div class="grid-overlay"></div>
+  <div class="vignette"></div>
+  <svg class="grain" width="100%" height="100%">
+    <filter id="noise"><feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="2" stitchTiles="stitch"/></filter>
+    <rect width="100%" height="100%" filter="url(#noise)"/>
+  </svg>
+  <div class="sim-cursor" id="sim-cursor">
+    <svg width="22" height="22" viewBox="0 0 22 22" fill="none"><path d="M2 2L19 9.5L11 11.5L9 19.5L2 2Z" fill="white" stroke="#08090c" stroke-width="1.2" stroke-linejoin="round"/></svg>
+  </div>
+
+  <!-- Scene 0: intro/start -->
+  <div id="start-overlay">
+    <div class="logo-mark">R</div>
+    <h1 class="big" style="font-size:44px;">REALTY <span class="accent">AI</span></h1>
+    <p class="sub" style="animation-delay:0s; opacity:1;">A 90-second look at your AI sales employee — live chat, live calls, live booking.</p>
+    <button id="start-btn">▶ Start Demo</button>
+    <a href="hindi/index.html" class="lang-link">हिंदी में देखें →</a>
+  </div>
+
+  <!-- Scene 1: hook -->
+  <div class="scene" data-scene="1">
+    <div class="kicker"><span class="dot"></span> THE PROBLEM</div>
+    <h1 class="big" data-kinetic>Leads come from <span class="accent">everywhere.</span></h1>
+    <div class="channel-row">
+      <div class="channel-card"><div class="icon">💬</div><div class="label">WhatsApp</div><div class="missed-badge">Missed</div></div>
+      <div class="channel-card"><div class="icon">📷</div><div class="label">Instagram</div><div class="missed-badge">Missed</div></div>
+      <div class="channel-card"><div class="icon">👍</div><div class="label">Facebook</div><div class="missed-badge">Missed</div></div>
+      <div class="channel-card"><div class="icon">📞</div><div class="label">Phone Call</div><div class="missed-badge">Missed</div></div>
+    </div>
+  </div>
+
+  <!-- Scene 2: intro -->
+  <div class="scene" data-scene="2">
+    <div class="logo-mark">R</div>
+    <h1 class="big" data-kinetic>Meet <span class="accent">Realty AI.</span></h1>
+    <p class="sub">One AI sales employee across every channel — answering instantly, day or night.</p>
+    <div class="kicker"><span class="dot live"></span> ONLINE 24 / 7</div>
+  </div>
+
+  <!-- Scene 3+4: whatsapp chat -->
+  <div class="scene" data-scene="3">
+    <div class="kicker"><span class="dot"></span> LIVE ON WHATSAPP</div>
+    <div class="phone-frame">
+      <div class="phone-head">
+        <div class="avatar">R</div>
+        <div><div class="name">Realty AI</div><div class="status">● Online now</div></div>
+      </div>
+      <div class="phone-body" id="chat-body"></div>
+    </div>
+  </div>
+
+  <!-- Scene 5+6: voice call -->
+  <div class="scene" data-scene="5">
+    <div class="kicker"><span class="dot"></span> LIVE VOICE CALLS</div>
+    <div class="call-orb-wrap">
+      <div class="ring"></div><div class="ring d2"></div>
+      <div class="orb"><svg viewBox="0 0 24 24" fill="none" stroke="#1a1400" stroke-width="2"><path d="M3 5a2 2 0 012-2h3l2 5-2 1a11 11 0 006 6l1-2 5 2v3a2 2 0 01-2 2A16 16 0 013 5z"/></svg></div>
+    </div>
+    <div class="call-status" id="call-status">Incoming call…</div>
+    <div class="waveform" id="waveform"></div>
+  </div>
+
+  <!-- Scene 7: booking -->
+  <div class="scene" data-scene="7">
+    <div class="kicker"><span class="dot"></span> INSTANT BOOKING</div>
+    <h1 class="big" style="font-size:40px;" data-kinetic>Straight onto <span class="accent">the calendar.</span></h1>
+    <div class="calendar-card">
+      <div class="check">✅</div>
+      <h3>Site Visit Confirmed</h3>
+      <p>Skyline Heights, Sector 150, Noida</p>
+      <div class="time">Tomorrow · 4:00 PM</div>
+    </div>
+  </div>
+
+  <!-- Scene 8: dashboard -->
+  <div class="scene" data-scene="8">
+    <div class="kicker"><span class="dot"></span> ONE DASHBOARD</div>
+    <div class="dash-mock">
+      <div class="bar">Leads Directory</div>
+      <div class="dash-stats">
+        <div class="stat-cell"><div class="num" data-count="247">0</div><div class="lbl">Total Leads</div></div>
+        <div class="stat-cell"><div class="num" data-count="38">0</div><div class="lbl">Hot Leads</div></div>
+        <div class="stat-cell"><div class="num" data-count="19">0</div><div class="lbl">Site Visits</div></div>
+        <div class="stat-cell"><div class="num" data-count="4">0</div><div class="lbl">Cities</div></div>
+      </div>
+      <div class="dash-rows">
+        <div class="dash-row"><span class="name">Rahul Mehta</span><span class="chan">WhatsApp</span><span class="pill hot">HOT</span></div>
+        <div class="dash-row"><span class="name">Priya Nair</span><span class="chan">Instagram</span><span class="pill warm">WARM</span></div>
+        <div class="dash-row"><span class="name">Ankesh Rai</span><span class="chan">Voice</span><span class="pill hot">HOT</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scene 9: CTA -->
+  <div class="scene" data-scene="9">
+    <div class="logo-mark">R</div>
+    <h1 class="big" data-kinetic>Always on. <span class="accent">Always selling.</span></h1>
+    <p class="sub">Realty AI — your AI sales employee, working every channel, every hour.</p>
+    <div class="cta-url">realestate-lead-management.vercel.app</div>
+    <div class="end-badge">Demo complete · press Replay to watch again</div>
+  </div>
+
+  <div id="hud">
+    <button id="replay-btn">⟲ Replay</button>
+    <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+    <button id="mute-btn">🔊</button>
+  </div>
+</div>
+
+<script src="script.js"></script>
+</body>
+</html>

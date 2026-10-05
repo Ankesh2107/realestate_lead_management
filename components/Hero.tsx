@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import {
   ArrowRight,
   Bot,
@@ -9,10 +10,6 @@ import {
 } from "lucide-react";
 
 const ORG_PHONE = process.env.NEXT_PUBLIC_ORG_CONTACT || "+91-9999999999";
-
-function scrollToDemo() {
-  document.getElementById("ai-demo")?.scrollIntoView({ behavior: "smooth", block: "start" });
-}
 
 export default function HeroSection() {
   return (
@@ -51,14 +48,13 @@ export default function HeroSection() {
 
           {/* CTA */}
           <div className="mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row">
-            <button
-              type="button"
-              onClick={scrollToDemo}
+            <Link
+              href="/watch-demo"
               className="group flex h-12 items-center gap-2 rounded-full bg-white px-7 text-sm font-semibold text-black transition hover:bg-white/90"
             >
               See AI in action
               <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" />
-            </button>
+            </Link>
 
             <a
               href={`tel:${ORG_PHONE}`}

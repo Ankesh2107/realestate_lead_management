@@ -298,10 +298,11 @@ import {
   Bell,
   Home,
   LogOut,
+  Menu,
   Search,
 } from 'lucide-react';
 
-export default function DashboardNavbar() {
+export default function DashboardNavbar({ onMenuClick }: { onMenuClick?: () => void } = {}) {
   const router = useRouter();
 
   async function handleLogout() {
@@ -311,19 +312,30 @@ export default function DashboardNavbar() {
   }
 
   return (
-    <header className="sticky top-0 z-40 px-4 pt-3 lg:px-6">
-      <div className="flex h-[82px] items-center gap-5 rounded-[26px] border border-[#e8e0d1] bg-white px-6 shadow-[0_12px_35px_-25px_rgba(60,50,30,0.28)]">
+    <header className="sticky top-0 z-30 px-3 pt-3 sm:px-4 lg:px-6">
+      <div className="flex h-[70px] items-center gap-2 rounded-[22px] border border-[#e8e0d1] bg-white px-3 shadow-[0_12px_35px_-25px_rgba(60,50,30,0.28)] sm:h-[82px] sm:gap-5 sm:rounded-[26px] sm:px-6">
+
+        {/* Hamburger — mobile/tablet only, opens the sidebar drawer */}
+        <button
+          type="button"
+          onClick={onMenuClick}
+          aria-label="Open menu"
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-[#68645d] transition-all hover:bg-[#f8f4ea] hover:text-[#14171f] lg:hidden"
+        >
+          <Menu size={20} strokeWidth={1.8} />
+        </button>
 
         {/* Home */}
         <Link
           href="/dashboard"
           className="
-            group flex h-12 shrink-0 items-center gap-3
+            group hidden h-12 shrink-0 items-center gap-3
             rounded-xl px-4
             text-[#68645d]
             transition-all
             hover:bg-[#f8f4ea]
             hover:text-[#14171f]
+            lg:flex
           "
         >
           <Home
@@ -338,10 +350,11 @@ export default function DashboardNavbar() {
         </Link>
 
         {/* Divider */}
-        <div className="h-9 w-px bg-[#eae4d9]" />
+        <div className="hidden h-9 w-px bg-[#eae4d9] lg:block" />
 
-        {/* Search */}
-        <div className="flex flex-1 justify-center">
+        {/* Search — decorative/non-functional today, so it's the first thing
+            to go on narrow screens rather than squeezing everything else */}
+        <div className="hidden flex-1 justify-center md:flex">
           <div className="relative w-full max-w-[680px]">
             <Search
               size={20}
@@ -375,7 +388,7 @@ export default function DashboardNavbar() {
             <div
               className="
                 absolute right-3 top-1/2
-                flex -translate-y-1/2
+                hidden -translate-y-1/2
                 items-center
                 rounded-lg
                 border border-[#e2dcd1]
@@ -384,6 +397,7 @@ export default function DashboardNavbar() {
                 text-[11px]
                 font-semibold
                 text-[#969087]
+                lg:flex
               "
             >
               ⌘ K
@@ -392,13 +406,13 @@ export default function DashboardNavbar() {
         </div>
 
         {/* Right */}
-        <div className="flex shrink-0 items-center gap-3">
+        <div className="ml-auto flex shrink-0 items-center gap-2 sm:gap-3">
 
           {/* Notification */}
           <button
             type="button"
             className="
-              relative flex h-12 w-12
+              relative flex h-11 w-11
               items-center justify-center
               rounded-xl
               border border-[#e6dfd3]
@@ -408,6 +422,7 @@ export default function DashboardNavbar() {
               hover:border-[#d8cdbb]
               hover:bg-[#f8f4ea]
               hover:text-[#14171f]
+              sm:h-12 sm:w-12
             "
           >
             <Bell
@@ -432,26 +447,28 @@ export default function DashboardNavbar() {
             onClick={handleLogout}
             title="Log out"
             className="
-              group flex h-12 items-center gap-3
+              group flex h-11 items-center gap-3
               rounded-xl
               border border-[#e6dfd3]
               bg-[#faf9f6]
-              pl-1.5 pr-3.5
+              pl-1.5 pr-1.5
               transition-all
               hover:border-[#d8cdbb]
               hover:bg-[#f8f4ea]
+              sm:h-12 sm:pr-3.5
             "
           >
             {/* Avatar */}
             <div
               className="
-                flex h-9 w-9
+                flex h-8 w-8
                 items-center justify-center
                 rounded-[10px]
                 bg-[#14171f]
                 text-[12px]
                 font-bold
                 text-[#e9c98a]
+                sm:h-9 sm:w-9
               "
             >
               VK

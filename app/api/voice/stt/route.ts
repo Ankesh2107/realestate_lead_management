@@ -25,9 +25,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'No audio file provided' }, { status: 400 });
     }
 
+    // Forward the browser's actual filename/format — Safari (iPhone) records
+    // audio/mp4, not webm, since it doesn't support any webm codec at all.
+    // Relabeling everything "audio.wav" regardless of real encoding was
+    // sending Sarvam mismatched content it couldn't decode on Safari.
+    const incomingName = (audioFile as File).name || 'audio.webm';
+
     // Build form-data for Sarvam STT
     const sarvamForm = new FormData();
-    sarvamForm.append('file', audioFile, 'audio.wav');
+    sarvamForm.append('file', audioFile, incomingName);
     sarvamForm.append('model', 'saaras:v2');
     sarvamForm.append('language_code', languageCode);
     sarvamForm.append('with_timestamps', 'false');

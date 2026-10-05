@@ -88,7 +88,7 @@
 import React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Building2, ClipboardList, LayoutGrid, PhoneCall, Sparkles, Users } from 'lucide-react';
+import { Building2, ClipboardList, LayoutGrid, PhoneCall, Sparkles, Users, X } from 'lucide-react';
 import { useHealthCheck } from '@/hooks/useHealthCheck';
 
 const NAV_ITEMS = [
@@ -99,25 +99,52 @@ const NAV_ITEMS = [
   { href: '/dashboard/ops', label: 'Ops & Escalations', icon: ClipboardList },
 ];
 
-export function Sidebar() {
+export function Sidebar({ open = false, onClose }: { open?: boolean; onClose?: () => void }) {
   const pathname = usePathname();
   const { health } = useHealthCheck();
 
   return (
-    <aside
-      className="sticky top-0 flex h-screen w-64 shrink-0 flex-col gap-6 overflow-y-auto border-r border-white/[0.06] p-4"
-      style={{ background: 'linear-gradient(180deg, #16171c 0%, #1b1c22 100%)' }}
-    >
-      {/* Logo */}
-      <div className="flex items-center gap-2.5 px-2 py-1">
+    <>
+      {/* Mobile/tablet backdrop — only rendered while the drawer is open */}
+      {open && (
         <div
-          className="flex h-9 w-9 items-center justify-center rounded-2xl shadow-md"
-          style={{ background: 'linear-gradient(135deg, #d4af6a, #b8863f)' }}
-        >
-          <Sparkles size={17} className="text-[#16171c]" />
+          className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm lg:hidden"
+          onClick={onClose}
+        />
+      )}
+
+      <aside
+        className={[
+          'flex h-screen w-72 shrink-0 flex-col gap-6 overflow-y-auto border-r border-white/[0.06] p-4 transition-transform duration-300 ease-out',
+          // Mobile/tablet: fixed, slide-in drawer, hidden off-screen by default.
+          // Desktop (lg+): back to a normal sticky in-flow sidebar, always visible.
+          'fixed inset-y-0 left-0 z-50 lg:sticky lg:top-0 lg:z-auto lg:w-64 lg:translate-x-0',
+          open ? 'translate-x-0' : '-translate-x-full',
+        ].join(' ')}
+        style={{ background: 'linear-gradient(180deg, #16171c 0%, #1b1c22 100%)' }}
+      >
+        {/* Logo */}
+        <div className="flex items-center justify-between px-2 py-1">
+          <div className="flex items-center gap-2.5">
+            <div
+              className="flex h-9 w-9 items-center justify-center rounded-2xl shadow-md"
+              style={{ background: 'linear-gradient(135deg, #d4af6a, #b8863f)' }}
+            >
+              <Sparkles size={17} className="text-[#16171c]" />
+            </div>
+            <span className="text-[17px] font-bold tracking-tight text-white">Realty AI</span>
+          </div>
+
+          {/* Close button — mobile/tablet drawer only */}
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex h-8 w-8 items-center justify-center rounded-full text-white/50 hover:bg-white/[0.06] hover:text-white lg:hidden"
+            aria-label="Close menu"
+          >
+            <X size={16} />
+          </button>
         </div>
-        <span className="text-[17px] font-bold tracking-tight text-white">Realty AI</span>
-      </div>
 
       {/* Nav */}
       <nav className="flex flex-col gap-1.5">
@@ -174,6 +201,7 @@ export function Sidebar() {
           </p>
         </div>
       </div>
-    </aside>
+      </aside>
+    </>
   );
 }

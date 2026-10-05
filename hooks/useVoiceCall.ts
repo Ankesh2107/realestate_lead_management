@@ -46,6 +46,12 @@ export function useVoiceCall() {
   const streamRef = useRef<MediaStream | null>(null);
   const recognitionRef = useRef<any>(null);
   const isProcessingTurnRef = useRef<boolean>(false);
+  // Safari (desktop and iOS) doesn't support 'audio/webm' at all — the
+  // MediaRecorder constructor throws. It also has no Web Speech API, so on
+  // Safari this recorder is the ONLY way to capture speech; picking a format
+  // Safari actually supports (and remembering it, instead of hardcoding
+  // webm everywhere downstream) is what makes the mic work there at all.
+  const recordedMimeTypeRef = useRef<string>('audio/webm');
 
   // Synchronize state with refs
   useEffect(() => { voiceStatusRef.current = voiceStatus; }, [voiceStatus]);
@@ -156,6 +162,12 @@ export function useVoiceCall() {
 
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
+        // Without a timeout, a slow/flaky mobile connection can leave this
+        // fetch hanging well past the browser's own generous defaults —
+        // the call just goes silent with no error, which is indistinguishable
+        // from "broken" to whoever's on the call. Fail fast, retry once.
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 12000);
         const res = await fetch('/api/voice/tts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -165,7 +177,8 @@ export function useVoiceCall() {
             language_code: currentLang,
             pace: currentPace,
           }),
-        });
+          signal: controller.signal,
+        }).finally(() => clearTimeout(timeoutId));
         if (!res.ok) throw new Error(`TTS HTTP error: ${res.status}`);
         const data = await res.json();
         if (data.audio) {
@@ -177,6 +190,9 @@ export function useVoiceCall() {
         }
       } catch (err) {
         console.warn(`[voice] Sarvam TTS attempt ${attempt} error:`, err);
+        if (attempt === 2) {
+          setNoticeMsg('Voice playback had trouble over this connection. The reply is in the transcript below.');
+        }
       }
     }
   }
@@ -186,15 +202,73 @@ export function useVoiceCall() {
     if (!blob || blob.size < 100) return '';
     try {
       const form = new FormData();
-      form.append('audio', blob, 'audio.wav');
+      // Filename extension matches the blob's actual encoding (see
+      // pickSupportedMimeType) — labeling non-wav audio as "audio.wav" was
+      // sending mismatched content that Sarvam couldn't decode.
+      const ext = mimeTypeToExtension(blob.type || recordedMimeTypeRef.current);
+      form.append('audio', blob, `audio.${ext}`);
       form.append('language_code', voiceLangRef.current);
-      const res = await fetch('/api/voice/stt', { method: 'POST', body: form });
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
+      const res = await fetch('/api/voice/stt', { method: 'POST', body: form, signal: controller.signal })
+        .finally(() => clearTimeout(timeoutId));
       if (!res.ok) return '';
       const data = await res.json();
       return data.transcript || '';
-    } catch {
+    } catch (err) {
+      console.warn('[voice] STT failed or timed out:', err);
       return '';
     }
+  }
+
+  /** Picks the first MediaRecorder mimeType this browser actually supports.
+   * Safari supports none of the webm variants but does support mp4/aac. */
+  function pickSupportedMimeType(): string | null {
+    if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) return null;
+    const candidates = [
+      'audio/webm;codecs=opus',
+      'audio/webm',
+      'audio/mp4',
+      'audio/aac',
+      'audio/ogg;codecs=opus',
+    ];
+    return candidates.find((t) => MediaRecorder.isTypeSupported(t)) || null;
+  }
+
+  /** Turns a getUserMedia rejection into a message that actually tells the
+   * user what to do — "permission denied" was being shown even when the
+   * real problem was no mic hardware, the mic being used by another app, or
+   * an insecure/unsupported context, none of which "grant permissions"
+   * fixes. */
+  function describeMicError(err: any): string {
+    const name = err?.name || '';
+    switch (name) {
+      case 'NotAllowedError':
+      case 'PermissionDeniedError':
+        return 'Microphone access was denied. Check your browser/site settings and allow microphone access for this site, then try again.';
+      case 'NotFoundError':
+      case 'DevicesNotFoundError':
+        return 'No microphone was found on this device.';
+      case 'NotReadableError':
+      case 'TrackStartError':
+        return 'Your microphone is being used by another app. Close other apps using the mic and try again.';
+      case 'SecurityError':
+        return 'Microphone access is blocked in this context. Make sure you’re on the https:// site, not a preview or embedded view.';
+      default:
+        return 'Couldn’t access the microphone. Please check your browser’s microphone permissions and try again.';
+    }
+  }
+
+  function mimeTypeToExtension(mimeType: string): string {
+    const base = (mimeType || '').split(';')[0].trim();
+    const map: Record<string, string> = {
+      'audio/webm': 'webm',
+      'audio/mp4': 'mp4',
+      'audio/aac': 'aac',
+      'audio/ogg': 'ogg',
+      'audio/wav': 'wav',
+    };
+    return map[base] || 'webm';
   }
 
   /** Mic level meter animation */
@@ -226,7 +300,7 @@ export function useVoiceCall() {
         return;
       }
       mr.onstop = () => {
-        resolve(new Blob(audioChunksRef.current, { type: 'audio/webm' }));
+        resolve(new Blob(audioChunksRef.current, { type: recordedMimeTypeRef.current }));
       };
       mr.stop();
     });
@@ -282,15 +356,23 @@ export function useVoiceCall() {
 
     let aiReply = "Aapki inquiry update ho gayi hai. Main Skyline Realty CRM se details check kar rahi hoon.";
     try {
+      // Gemini turns (sometimes with tool calls) legitimately take longer
+      // than TTS, so this gets a longer budget — but still a bound, rather
+      // than letting a bad connection hang indefinitely with the status
+      // stuck on "processing" and no feedback.
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 20000);
       const res = await fetch('/api/test/message', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sessionId: voiceSessionRef.current, text: textToProcess, channel: 'voice' }),
-      });
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timeoutId));
       const data = await res.json();
       if (data.reply) aiReply = data.reply;
-    } catch {
-      /* fallback */
+    } catch (err) {
+      console.warn('[voice] /api/test/message failed or timed out:', err);
+      setNoticeMsg('Slow connection — using a quick fallback reply.');
     }
 
     addTranscript('Realty AI', aiReply);
@@ -317,17 +399,32 @@ export function useVoiceCall() {
 
     if (streamRef.current) {
       try {
-        const mr = new MediaRecorder(streamRef.current, { mimeType: 'audio/webm' });
+        const supportedType = pickSupportedMimeType();
+        // Omitting mimeType entirely (rather than forcing one that throws)
+        // lets the browser fall back to its own default — Safari still
+        // records successfully this way even when none of our candidates
+        // are supported.
+        const mr = supportedType
+          ? new MediaRecorder(streamRef.current, { mimeType: supportedType })
+          : new MediaRecorder(streamRef.current);
+        recordedMimeTypeRef.current = mr.mimeType || supportedType || 'audio/webm';
         audioChunksRef.current = [];
         mr.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
         mr.start();
         mediaRecorderRef.current = mr;
-      } catch {
-        /* proceed */
+      } catch (err) {
+        console.warn('[voice] MediaRecorder unavailable on this browser:', err);
       }
     }
 
     const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRec) {
+      // Safari (desktop and iOS) has no Web Speech API at all, so there's no
+      // automatic "you've stopped talking" detection — recording still
+      // works (via the MediaRecorder fallback above), it just needs a
+      // manual tap to submit instead of auto-submitting on silence.
+      setNoticeMsg('Speak, then tap "Send now" below — this browser can’t auto-detect when you’re done talking.');
+    }
     if (SpeechRec) {
       try {
         const rec = new SpeechRec();
@@ -365,6 +462,25 @@ export function useVoiceCall() {
   async function startCall() {
     if (voiceStatus !== 'idle' && voiceStatus !== 'ended') return;
 
+    // In-app browsers (opening a shared link inside Instagram/Facebook/
+    // WhatsApp/Line's own embedded webview, rather than a real browser) very
+    // commonly block microphone access entirely at the container-app level —
+    // no permission dialog ever appears, getUserMedia just rejects. Catching
+    // this up front with a specific, actionable message is the difference
+    // between "it's broken" and "open this in Chrome/Safari instead", which
+    // is the actual fix and isn't something any code change can work around.
+    const ua = navigator.userAgent || '';
+    const inAppBrowser = /Instagram|FBAN|FBAV|Line\/|MicroMessenger|WhatsApp/i.test(ua);
+    if (inAppBrowser) {
+      setNoticeMsg('This looks like an in-app browser (Instagram/Facebook/WhatsApp), which usually blocks microphone access. Tap the "⋯" menu and choose "Open in Browser" (Chrome or Safari), then try again.');
+      return;
+    }
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setNoticeMsg('This browser doesn’t support microphone access. Please try the latest Chrome or Safari.');
+      return;
+    }
+
     // Unlock audio playback synchronously, in the same call stack as this
     // click, before the mic-permission prompt or any network request can
     // consume the browser's "user gesture" window. Every later utterance
@@ -377,8 +493,8 @@ export function useVoiceCall() {
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
-    } catch {
-      alert('Microphone access denied. Please grant mic permissions in your browser to use Voice Call.');
+    } catch (err: any) {
+      setNoticeMsg(describeMicError(err));
       return;
     }
 
